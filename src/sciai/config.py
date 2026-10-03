@@ -1,0 +1,79 @@
+"""Typed configuration loaded from config/default.toml plus an optional user file."""
+from __future__ import annotations
+
+import tomllib
+from dataclasses import dataclass, field, fields
+from pathlib import Path
+from typing import Any
+
+DEFAULT_FILE = Path(__file__).resolve().parents[2] / "config" / "default.toml"
+USER_FILE = Path("~/.sciai/config.toml").expanduser()
+
+
+@dataclass
+class ModelConfig:
+    name: str = "qwen2.5:7b-instruct-q4_K_M"
+    ollama_url: str = "http://127.0.0.1:11434"
+    num_ctx: int = 8192
+    num_predict: int = 384
+    temperature: float = 0.0
+    keep_alive: str = "30m"
+    request_timeout: float = 240
+
+
+@dataclass
+class ControllerConfig:
+    max_steps: int = 14
+    max_invalid_streak: int = 2
+    auto_confirm_root: bool = False
+
+
+@dataclass
+class RiskConfig:
+    stakes_threshold: int = 2
+    min_confidence: float = 0.9
+    structural_int_max: int = 10
+
+
+@dataclass
+class ToolsConfig:
+    timeout: float = 20
+
+
+@dataclass
+class StoreConfig:
+    db_path: str = "~/.sciai/knowledge.db"
+
+
+@dataclass
+class Config:
+    model: ModelConfig = field(default_factory=ModelConfig)
+    controller: ControllerConfig = field(default_factory=ControllerConfig)
+    risk: RiskConfig = field(default_factory=RiskConfig)
+    tools: ToolsConfig = field(default_factory=ToolsConfig)
+    store: StoreConfig = field(default_factory=StoreConfig)
+
+    @property
+    def db_path(self) -> Path:
+        return Path(self.store.db_path).expanduser()
+
+
+def _apply(section: Any, values: dict[str, Any]) -> None:
+    known = {f.name for f in fields(section)}
+    for key, value in values.items():
+        if key not in known:
+            raise ValueError(f"unknown config key {type(section).__name__}.{key}")
+        setattr(section, key, value)
+
+
+def load(paths: list[Path] | None = None) -> Config:
+    cfg = Config()
+    for path in paths if paths is not None else [DEFAULT_FILE, USER_FILE]:
+        if not path.exists():
+            continue
+        data = tomllib.loads(path.read_text(encoding="utf-8"))
+        for name, values in data.items():
+            if not hasattr(cfg, name):
+                raise ValueError(f"unknown config section [{name}] in {path}")
+            _apply(getattr(cfg, name), values)
+    return cfg

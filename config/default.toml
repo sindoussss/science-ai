@@ -1,0 +1,30 @@
+# Science AI defaults. Copy to ~/.sciai/config.toml to override any key.
+
+[model]
+name = "qwen2.5:7b-instruct-q4_K_M"   # any 7-12B 4-bit model served by Ollama
+ollama_url = "http://127.0.0.1:11434" # must be localhost: no outside network at runtime
+# Context window, set explicitly (Ollama's default is smaller and silently truncates).
+# 8GB VRAM budget, roughly: 7-8B Q4 weights ~4.5-5GB + KV cache. With GQA models
+# (Qwen2.5, Llama 3.x) 8192 tokens of KV cache is ~0.5-1GB, which fits; 12B models
+# should drop to 4096. The graph digest is sized to whatever num_ctx says.
+num_ctx = 8192
+num_predict = 384          # max tokens per reply; actions are short JSON
+temperature = 0.0
+keep_alive = "30m"
+request_timeout = 240
+
+[controller]
+max_steps = 14
+max_invalid_streak = 2     # consecutive invalid outputs (after their retry) before stopping
+auto_confirm_root = false  # the UI asks the user to confirm the formalized problem
+
+[risk]
+stakes_threshold = 2       # unverified node with this many transitive dependents gets checked
+min_confidence = 0.9
+structural_int_max = 10    # small integers (orders, exponents) allowed in tool args without a source
+
+[tools]
+timeout = 20
+
+[store]
+db_path = "~/.sciai/knowledge.db"
