@@ -73,6 +73,14 @@ class GraphEngine:
         self.by_handle[handle] = node.id
         self.g.add_node(node.id)
 
+    def snapshot(self) -> tuple[list[tuple[Node, str]], list[tuple[str, str, EdgeKind]]]:
+        """Deep copy of the open session for another thread (the UI) to render."""
+        import copy
+
+        nodes = [(copy.deepcopy(n), self.handles[nid]) for nid, n in self.nodes.items()]
+        edges = [(u, v, d["kind"]) for u, v, d in self.g.edges(data=True)]
+        return nodes, edges
+
     # ----------------------------------------------------------------- lookups
     def resolve(self, ref: str) -> Node:
         """Accept a handle (n3) or a node id."""

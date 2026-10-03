@@ -1,0 +1,64 @@
+{
+  "name": "dark",
+  "color": {
+    "canvas": "#151515",
+    "panel": "#1D1D1C",
+    "border": "#2E2E2C",
+    "border_strong": "#3D3D3A",
+    "text": "#ECECEA",
+    "text_muted": "#A3A39E",
+    "text_faint": "#77776F",
+    "accent": "#7C9CF0",
+    "accent_text": "#0E0E0E",
+    "accent_soft": "#24304F",
+    "selection": "#7C9CF0",
+    "edge": "#4A4A46",
+    "edge_check": "#5E5E59",
+    "edge_conflict": "#E0675C",
+    "status_verified": "#4CC07F",
+    "status_verified_bg": "#1B2E22",
+    "status_failed": "#E0675C",
+    "status_failed_bg": "#3A1F1C",
+    "status_invalidated": "#8A8A84",
+    "status_invalidated_bg": "#232322",
+    "status_proposed": "#E3A23B",
+    "status_proposed_bg": "#352A15",
+    "status_hypothesis": "#A98AE8",
+    "status_hypothesis_bg": "#2A2340",
+    "warning": "#E3A23B",
+    "pin": "#7C9CF0"
+  },
+  "radius": {
+    "panel": 8,
+    "node": 8,
+    "chip": 10,
+    "button": 6
+  },
+  "font": {
+    "ui": [
+      "Inter",
+      "Segoe UI",
+      "SF Pro Text",
+      "Helvetica Neue",
+      "Arial"
+    ],
+    "mono": [
+      "JetBrains Mono",
+      "Cascadia Mono",
+      "SF Mono",
+      "Consolas",
+      "DejaVu Sans Mono",
+      "monospace"
+    ],
+    "size_ui": 10,
+    "size_small": 9,
+    "size_mono": 9
+  },
+  "space": {
+    "xs": 4,
+    "sm": 8,
+    "md": 12,
+    "lg": 16
+  },
+  "_note": "Placeholder until the light theme is polished; values are a first pass."
+}

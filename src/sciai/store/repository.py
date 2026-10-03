@@ -260,6 +260,12 @@ class Repository:
         )
         return [node_from_row(r) for r in rows]
 
+    def verified_results(self, limit: int = 200) -> list[Node]:
+        rows = self.db.query(
+            f"SELECT {_NODE_COLS} FROM nodes WHERE status='verified' AND type IN ('tool_result','final') "
+            "ORDER BY updated_at DESC LIMIT ?", (limit,))
+        return [node_from_row(r) for r in rows]
+
     def flag_unverified(self) -> int:
         """On startup: unverified nodes from earlier runs become hints that need re-checking."""
         with self.db.tx() as c:

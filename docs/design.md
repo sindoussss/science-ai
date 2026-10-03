@@ -1,6 +1,6 @@
 # Science AI: Phase 0 proposal (file tree + graph schema)
 
-Status: **awaiting approval**. No code has been written. Section 4 lists the decisions I need from you.
+Status: **approved 2026-10-03 with changes** (see section 5). Phase 1 is implemented on the `phase-1` branch.
 
 Defaults picked where the spec was open: PyQt6 UI, one Ollama model (default `qwen2.5:7b-instruct-q4_K_M`, configurable), SQLite + networkx, `pint` for units, pytest for tests.
 
@@ -220,3 +220,14 @@ Two code guards, no trust in prompting:
 3. **Where the code lives.** No repository is attached to this project. Options: a new GitHub repo you create and attach (recommended, so you get PRs per phase), or code delivered into the project files folder.
 
 Everything else follows your spec as written. On approval I start Phase 1 in this order: graph engine + store, tools + sandbox, risk rules + verifier + ladder, controller with the fake LLM, acceptance tests, then the minimal UI.
+
+## 5. Approved changes (2026-10-03)
+
+1. The node flag is `locked` (pins stay as comments). Locked nodes are never auto-deleted or auto-demoted, but still show failed/invalidated, with a warning.
+2. Number provenance: the formalized problem is the root node, shown to the user for confirmation. Tool args may use numbers from any ancestor node plus small structural integers (|n| <= 10); other numbers flag the node for the verifier instead of being rejected. Final-answer templates keep the hard reject on digits.
+3. Safe parsing: a token whitelist plus a restricted namespace (no builtins) in front of `parse_expr`, an unevaluated pre-parse that rejects size bombs, and the sandbox process as the second layer.
+4. A SQLite CHECK constraint and an UPDATE trigger block `chem` + `verified`. A node's domain comes only from the tool registry (or is derived from its dependencies), never from the caller.
+5. `num_ctx` is set explicitly on every Ollama request (default 8192) and the graph digest is sized to fit it; tested with an 800-node graph at 8192 and 4096.
+6. A cascade that reaches nodes used by other sessions returns a report of the affected sessions and answers, shows it in the UI, and stores a notice that appears when those sessions are opened.
+
+Decisions: `locked` flag; template-only final answers; code in the private `science-ai` repo with one branch per phase.
