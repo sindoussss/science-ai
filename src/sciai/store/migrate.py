@@ -1,5 +1,10 @@
 """Schema migrations, run when an older knowledge store is opened.
 
+v2 -> v3 only adds the ``datasets`` table and its index, so nothing is rebuilt; it still
+runs under the same rules: ``VACUUM INTO`` backup, foreign keys off outside one
+transaction, every index, trigger and view checked to be intact afterwards,
+``foreign_key_check`` before the commit and ``integrity_check`` after it.
+
 v1 -> v2 adds 'assumption' to the CHECK on ``nodes.type``. SQLite can't alter a
 CHECK constraint, so the table is rebuilt, following SQLite's documented
 procedure (https://www.sqlite.org/lang_altertable.html#otheralter):
@@ -46,14 +51,14 @@ def nodes_table_body(schema_sql: str) -> str:
     return m.group(1)
 
 
-def backup_path(db_path: Path) -> Path:
-    """knowledge.db.v1.bak, or a timestamped name if an earlier attempt left one behind."""
-    path = db_path.with_name(db_path.name + ".v1.bak")
+def backup_path(db_path: Path, version: int = 1) -> Path:
+    """knowledge.db.v<version>.bak, or a timestamped name if an earlier attempt left one behind."""
+    path = db_path.with_name(f"{db_path.name}.v{version}.bak")
     if path.exists():
-        path = db_path.with_name(f"{db_path.name}.v1.{time.strftime('%Y%m%d-%H%M%S')}.bak")
+        path = db_path.with_name(f"{db_path.name}.v{version}.{time.strftime('%Y%m%d-%H%M%S')}.bak")
     n = 1
     while path.exists():
-        path = db_path.with_name(f"{db_path.name}.v1.{time.strftime('%Y%m%d-%H%M%S')}-{n}.bak")
+        path = db_path.with_name(f"{db_path.name}.v{version}.{time.strftime('%Y%m%d-%H%M%S')}-{n}.bak")
         n += 1
     return path
 
@@ -114,4 +119,55 @@ def migrate_v1_to_v2(conn: sqlite3.Connection, db_path: str, schema_sql: str) ->
     result = [r[0] for r in conn.execute("PRAGMA integrity_check").fetchall()]
     if result != ["ok"]:
         raise IntegrityFailure(f"integrity_check after the v2 migration: {'; '.join(result[:5])}", backup)
+    return backup
+
+
+_V3_DDL = re.compile(r"CREATE TABLE IF NOT EXISTS datasets \(.*?\n\);|"
+                     r"CREATE INDEX IF NOT EXISTS idx_datasets_\w+ ON datasets\([^)]*\);", re.DOTALL)
+
+
+def v3_statements(schema_sql: str) -> list[str]:
+    statements = _V3_DDL.findall(schema_sql)
+    if not any(s.startswith("CREATE TABLE") for s in statements):
+        raise MigrationError("schema.sql has no datasets table definition")
+    return statements
+
+
+def _schema_objects(conn: sqlite3.Connection) -> set[tuple[str, str, str]]:
+    return {tuple(r) for r in conn.execute(
+        "SELECT type, name, sql FROM sqlite_master WHERE type IN ('index', 'trigger', 'view') AND sql IS NOT NULL")}
+
+
+def migrate_v2_to_v3(conn: sqlite3.Connection, db_path: str, schema_sql: str) -> Path | None:
+    """Adds the datasets table. Returns the backup path (None for an in-memory store)."""
+    backup = None
+    if db_path != ":memory:":
+        backup = backup_path(Path(db_path), 2)
+        conn.execute("VACUUM INTO ?", (str(backup),))
+    statements = v3_statements(schema_sql)
+    conn.execute("PRAGMA foreign_keys = OFF")
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            before = _schema_objects(conn)
+            for sql in statements:
+                conn.execute(sql)
+            lost = before - _schema_objects(conn)
+            if lost:
+                raise MigrationError(f"{len(lost)} index/trigger/view definition(s) changed: "
+                                     f"{sorted(name for _, name, _ in lost)}")
+            problems = conn.execute("PRAGMA foreign_key_check").fetchall()
+            if problems:
+                raise MigrationError(f"foreign_key_check found {len(problems)} broken reference(s), "
+                                     f"first: {tuple(problems[0])}")
+            conn.execute("UPDATE meta SET value = '3' WHERE key = 'schema_version'")
+            conn.execute("COMMIT")
+        except BaseException:
+            conn.execute("ROLLBACK")
+            raise
+    finally:
+        conn.execute("PRAGMA foreign_keys = ON")
+    result = [r[0] for r in conn.execute("PRAGMA integrity_check").fetchall()]
+    if result != ["ok"]:
+        raise IntegrityFailure(f"integrity_check after the v3 migration: {'; '.join(result[:5])}", backup)
     return backup

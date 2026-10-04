@@ -24,7 +24,9 @@ DEFAULTS: dict[str, tuple[str, ...]] = {
     "general": ("constants from CODATA", "given values are exact"),
 }
 PROBLEM_TYPES = tuple(DEFAULTS)
-NO_CHECKLIST = ("math",)  # pure mathematics: no modelling assumptions to offer
+# Pure mathematics has no modelling assumptions to offer; a data question's assumptions come from
+# each test's own diagnostics (normality, equal variances...), attached to that test's node.
+NO_CHECKLIST = ("math", "data")
 MAX_MODEL_ASSUMPTIONS = 8
 MAX_ASSUMPTION_CHARS = 120
 

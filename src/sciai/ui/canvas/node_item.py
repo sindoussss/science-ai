@@ -4,13 +4,14 @@ from __future__ import annotations
 from typing import Callable
 
 from PyQt6.QtCore import QPointF, QRectF, Qt
-from PyQt6.QtGui import QBrush, QFontMetricsF, QPainter, QPainterPath, QPen
+from PyQt6.QtGui import QBrush, QFontMetricsF, QPainter, QPen
 from PyQt6.QtWidgets import QGraphicsItem, QGraphicsSceneMouseEvent, QStyleOptionGraphicsItem, QWidget
 
 from sciai.graph.model import Node, NodeType, Status
 from sciai.ui.canvas.layout import NODE_H, NODE_W, PILL_H, PILL_INSET, PLOT_H
 from sciai.ui.canvas.pins import PIN_D
 from sciai.ui.chips import chip_label, paint_chip
+from sciai.ui.plot_image import plot_image
 from sciai.ui.theme.theme import Theme
 
 PAD = 12
@@ -29,7 +30,23 @@ def assumption_chip(node: Node) -> tuple[str, str]:
         return "failed", "rejected"
     if node.status == Status.INVALIDATED:
         return "invalidated", "invalidated"
+    if is_doubtful(node):
+        return "inconclusive", "doubtful"
     return "inconclusive", "assumed"
+
+
+def is_doubtful(node: Node) -> bool:
+    """A test's assumption that its diagnostic speaks against (flagged, never failed)."""
+    return any(f.startswith("doubtful") for f in node.flags)
+
+
+def assumption_source(node: Node) -> str:
+    """Where an assumption came from, shown faint in its body row."""
+    source = (node.tool_inputs or {}).get("source")
+    if source == "diagnostic":
+        d = (node.tool_inputs or {}).get("diagnostic") or {}
+        return "stated, not tested" if d.get("ok") is None else "diagnostic"
+    return "default" if source == "default" else "suggested"
 
 
 def node_tooltip(node: Node, handle: str) -> str:
@@ -47,8 +64,8 @@ def body_prefix(n: Node, handle: str) -> str:
     words = [handle]
     if n.locked and n.type != NodeType.ASSUMPTION:
         words.append("locked")
-    if n.warning or n.flags:
-        words.append("flagged")
+    if n.warning or [f for f in n.flags if not (n.type == NodeType.ASSUMPTION and f.startswith("doubtful"))]:
+        words.append("flagged")  # a doubtful assumption says so in its chip
     return " · ".join(words)
 
 class NodeItem(QGraphicsItem):
@@ -158,13 +175,12 @@ class NodeItem(QGraphicsItem):
         x += tw + 6
 
         if n.result and n.result.get("kind") == "plotspec":
-            self._paint_plot(p, QRectF(PAD, BODY_Y + BODY_H + 4, w - 2 * PAD, h - BODY_Y - BODY_H - 4 - PAD))
+            self._paint_plot(p, QRectF(PAD, BODY_Y + BODY_H + 4, w - 2 * PAD, h - BODY_Y - BODY_H - 4 - PAD), widget)
         else:
             if n.type == NodeType.FINAL and self.math:
                 text, font = self.math, t.ui_font("size_node_title_px", bold=True)
             elif n.type == NodeType.ASSUMPTION:  # the title carries the text
-                source = (n.tool_inputs or {}).get("source")
-                text = "default" if source == "default" else "suggested"
+                text = assumption_source(n)
                 font = t.ui_font("size_node_small_px")
             else:
                 text = n.content if n.type in TEXT_TYPES else n.display_result()
@@ -200,30 +216,13 @@ class NodeItem(QGraphicsItem):
         p.drawText(QRectF(10, 0, room, h), Qt.AlignmentFlag.AlignVCenter,
                    QFontMetricsF(font).elidedText(label, Qt.TextElideMode.ElideRight, room))
 
-    def _paint_plot(self, p: QPainter, area: QRectF) -> None:
-        spec = self.node.result["value"]
-        pts = [(x, y) for x, y in zip(spec.get("x", []), spec.get("y", [])) if y is not None]
-        if len(pts) < 2:
-            return
-        xs, ys = [a for a, _ in pts], [b for _, b in pts]
-        x0, x1, y0, y1 = min(xs), max(xs), min(ys), max(ys)
-        if x1 == x0:
-            return
-        if y1 == y0:
-            y0, y1 = y0 - 1, y1 + 1
-        path = QPainterPath()
-        for i, (x, y) in enumerate(pts):
-            px = area.left() + (x - x0) / (x1 - x0) * area.width()
-            py = area.bottom() - (y - y0) / (y1 - y0) * area.height()
-            if i == 0:
-                path.moveTo(px, py)
-            else:
-                path.lineTo(px, py)
-        p.setPen(QPen(self.theme.c("border"), 1))
-        p.drawLine(area.bottomLeft(), area.bottomRight())
-        p.setPen(QPen(self.theme.c("accent"), 1.5))
-        p.setBrush(Qt.BrushStyle.NoBrush)
-        p.drawPath(path)
+    def _paint_plot(self, p: QPainter, area: QRectF, widget: QWidget | None) -> None:
+        """A compact thumbnail of the plot (no labels), rendered at least at 2x so it stays sharp
+        when the graph is zoomed in."""
+        dpr = max(2.0, widget.devicePixelRatioF() if widget is not None else 1.0)
+        img = plot_image(self.theme, self.node.result["value"], int(area.width()), int(area.height()),
+                         dpr=dpr, compact=True, key=f"node:{self.node.id}")
+        p.drawImage(area, img)
 
     # interaction ---------------------------------------------------------
     def hoverEnterEvent(self, event) -> None:  # noqa: N802, ANN001

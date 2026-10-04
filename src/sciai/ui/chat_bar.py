@@ -492,7 +492,7 @@ class ChatPane(QWidget):
         self.composer.submit()
 
     def set_busy(self, busy: bool) -> None:
-        """Send <-> Stop. Any engine job counts (opening a session, a lock), not only a task run."""
+        """Send <-> Stop, while a controller run (a task or a pin re-check) is in flight."""
         self.composer.set_busy(busy)
 
     def start_run(self) -> None:

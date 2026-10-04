@@ -1,7 +1,8 @@
 """Node tab of the workspace, structured like the reference's notebook cell view.
 
 Header: "[n2]" cell tag, tool chip, status chip | version stepper "< v2 >", download, close.
-Sub-tabs: Code | Execution Log | Messages | Environment | Review.
+Sub-tabs: Code | Data | Plot | Execution Log | Messages | Environment | Review. Data shows for a
+dataset and for every step that read one; Plot for a plot (a node shows at most one of the two).
 """
 from __future__ import annotations
 
@@ -32,10 +33,12 @@ from sciai.ui.icons import icon
 from sciai.ui.layout_util import FlowLayout, clear_layout
 from sciai.ui.theme.theme import Theme
 from sciai.ui.workspace.code_view import CodeView
+from sciai.ui.workspace.data_view import DataView, PlotTab, dataset_of, plot_of
 from sciai.ui.workspace.review import ReviewPanel
 from sciai.ui.workspace.subtabs import SubTabs
 
-TAB_NAMES = ("Code", "Execution Log", "Messages", "Environment", "Review")
+TAB_NAMES = ("Code", "Data", "Plot", "Execution Log", "Messages", "Environment", "Review")
+SHORT_TAB_NAMES = {"Execution Log": "Log"}  # drawn only when six tabs don't fit (narrowest workspace)
 
 
 def _ts(t: float) -> str:
@@ -270,11 +273,18 @@ class NodePanel(QWidget):
         self.delete_action.triggered.connect(lambda: self.node and self.delete.emit(self.node.id))
         self.reject_btn.clicked.connect(lambda: self.node and self.reject_assumption.emit(self.node.id))
 
-        for w, name in ((code_page, "Code"), (_scroll(log_body), "Execution Log"), (msg_page, "Messages"),
+        # Data and Plot -------------------------------------------------------------------
+        self.data_view = DataView(t)
+        self.plot_tab = PlotTab(t)
+
+        for w, name in ((code_page, "Code"), (self.data_view, "Data"), (self.plot_tab, "Plot"),
+                        (_scroll(log_body), "Execution Log"), (msg_page, "Messages"),
                         (_scroll(env_body), "Environment"), (review_page, "Review")):
-            self.tabs.addTab(w, name)
-        self.tabs.currentChanged.connect(
-            lambda i: self._refresh_env() if self.tabs.tabText(i) == "Environment" else None)
+            self.tabs.addTab(w, name, SHORT_TAB_NAMES.get(name))
+        self.tabs.setTabVisible(self.tabs.indexOf("Data"), False)
+        self.tabs.setTabVisible(self.tabs.indexOf("Plot"), False)
+        self._pending_desc: dict[str, Any] | None = None
+        self.tabs.currentChanged.connect(self._tab_changed)
         self._set_enabled(False)
 
     # ------------------------------------------------------------------ helpers
@@ -287,7 +297,32 @@ class NodePanel(QWidget):
             b.setEnabled(on)
 
     def tab_labels(self) -> list[str]:
-        return [self.tabs.tabText(i) for i in range(self.tabs.count())]
+        """The tabs shown for the current node."""
+        return [self.tabs.tabText(i) for i in self.tabs.visible_indexes()]
+
+    def show_tab(self, label: str) -> None:
+        self.tabs.setCurrentIndex(self.tabs.indexOf(label))
+
+    def _data_and_plot(self, node: Node | None) -> None:
+        plot = plot_of(node)
+        desc = None if plot is not None else dataset_of(node, self.repo.get_node)
+        if plot is not None and node is not None:
+            name = f"{self.handles.get(node.id, 'plot')}_{node.title}".replace(" ", "_")
+            self.plot_tab.show_plot(plot, "".join(ch for ch in name if ch.isalnum() or ch in "_-") or "plot")
+        else:
+            self.plot_tab.show_plot(None)
+        self._pending_desc = desc
+        self.tabs.setTabVisible(self.tabs.indexOf("Plot"), plot is not None)
+        self.tabs.setTabVisible(self.tabs.indexOf("Data"), desc is not None)
+        self._tab_changed(self.tabs.currentIndex())
+
+    def _tab_changed(self, i: int) -> None:
+        """The Data tab reads its rows only when it is opened, not on every selection."""
+        label = self.tabs.tabText(i)
+        if label == "Data":
+            self.data_view.show_dataset(self._pending_desc)
+        elif label == "Environment":
+            self._refresh_env()
 
     # --------------------------------------------------------------------- show
     def show_node(self, node: Node | None, handles: dict[str, str]) -> None:
@@ -307,6 +342,7 @@ class NodePanel(QWidget):
             for box in (self.log_box, self.msg_box):
                 clear_layout(box)
             self.review.clear()
+            self._data_and_plot(None)
             self._versions = []
             self.prev_v.setEnabled(False)
             self.next_v.setEnabled(False)
@@ -408,9 +444,8 @@ class NodePanel(QWidget):
             mark, color = "check_circle", t.hex("text_secondary")
         else:
             mark, color = "dash_circle", t.hex("text_faint")
-        self.tabs.setTabIcon(4, icon(mark, color))
-        if self.tabs.tabText(self.tabs.currentIndex()) == "Environment":
-            self._refresh_env()
+        self.tabs.setTabIcon(self.tabs.indexOf("Review"), icon(mark, color))
+        self._data_and_plot(node)  # also refreshes the Data or Environment tab if it is open
 
     def _log_row(self, when: float, what: str, detail: str) -> None:
         from sciai.ui.chat.inline import InlineText

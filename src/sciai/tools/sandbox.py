@@ -74,7 +74,13 @@ class InlineRunner:
 
 
 def _harden_worker() -> None:
+    import os
     import socket
+
+    # One BLAS/OpenMP thread: on a many-core machine each thread reserves address space, and the
+    # memory cap below would otherwise be hit by NumPy's own start-up, not by a tool.
+    for name in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS"):
+        os.environ.setdefault(name, "1")
 
     class _NoNetwork(socket.socket):
         def __init__(self, *a: Any, **k: Any) -> None:

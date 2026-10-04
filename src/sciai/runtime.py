@@ -6,6 +6,7 @@ from pathlib import Path
 
 from sciai.config import Config
 from sciai.controller.loop import ConfirmRoot, Controller
+from sciai.domains.data.datasets import ImportResult, import_file, remove_dataset
 from sciai.graph.engine import GraphEngine
 from sciai.graph.events import EventBus
 from sciai.llm.client import LLM, OllamaClient
@@ -24,6 +25,15 @@ class Runtime:
     llm: LLM
     controller: Controller
     flagged_on_start: int
+
+    def import_file(self, path: str | Path, name: str | None = None) -> ImportResult:
+        return import_file(path, self.repo, self.runner, self.cfg.data, name)
+
+    def remove_dataset(self, name: str) -> list[str]:
+        rec = self.repo.dataset_by_name(name)
+        if rec is None:
+            raise KeyError(f"no imported dataset is named {name!r}")
+        return remove_dataset(rec, self.engine)
 
     def close(self) -> None:
         self.runner.close()

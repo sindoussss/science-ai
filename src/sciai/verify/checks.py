@@ -181,7 +181,59 @@ def _circuit(a: dict, r: dict) -> dict | None:
     return {"netlist": a["netlist"], "solution": r["solution"]}
 
 
+# ------------------------------------------------------------------ data (Phase 3)
+# ``a["dataset"]`` is the dataset descriptor here: the verifier swaps the stored node id for
+# that node's result before building plans (Verifier.offered).
+def _loaded(a: dict, r: dict) -> dict | None:
+    return {"loaded": r} if r.get("kind") == "dataset" else None
+
+
+def _table(a: dict, r: dict) -> dict | None:
+    return {"dataset": a["dataset"], "table": r} if r.get("kind") == "table" and isinstance(a.get("dataset"), dict) \
+        else None
+
+
+def _frame(a: dict, r: dict) -> dict | None:
+    return {"result": r} if r.get("kind") == "dataset" and r.get("recipe") else None
+
+
+def _stats(a: dict, r: dict) -> dict | None:
+    if r.get("kind") != "stats" or not isinstance(a.get("dataset"), dict):
+        return None
+    return {"dataset": a["dataset"], "test_args": {k: v for k, v in a.items() if k != "dataset"}, "result": r}
+
+
+def _stats_for(*tests: str) -> Builder:
+    def build(a: dict, r: dict) -> dict | None:
+        return _stats(a, r) if r.get("test") in tests else None
+    return build
+
+
+def _adjusted(a: dict, r: dict) -> dict | None:
+    return {"result": r} if r.get("kind") == "adjusted" else None
+
+
+_FORMULA = CheckPlan("formula", "stats.check_formula", _stats, 1, required=True, must_pass=True)
+_PERMUTATION = CheckPlan("permutation", "stats.check_permutation",
+                         _stats_for("welch_t", "student_t", "one_sample_t", "paired_t", "mann_whitney", "pearson",
+                                    "spearman", "anova", "kruskal", "chi2"), 2)
+_STATSMODELS = CheckPlan("statsmodels", "stats.check_statsmodels",
+                         _stats_for("welch_t", "student_t", "one_sample_t", "paired_t", "anova", "ols"), 3)
+
 PLANS: dict[str, list[CheckPlan]] = {
+    "data.load": [CheckPlan("reread", "data.check_load", _loaded, 1, required=True, must_pass=True)],
+    "data.describe": [CheckPlan("alt_algorithm", "data.check_describe", _table, 1)],
+    "data.group": [CheckPlan("alt_algorithm", "data.check_group", _table, 1)],
+    "data.filter": [CheckPlan("row_by_row", "data.check_frame", _frame, 1)],
+    "data.derive": [CheckPlan("row_by_row", "data.check_frame", _frame, 1)],
+    "stats.ttest": [_FORMULA, _PERMUTATION, _STATSMODELS],
+    "stats.mannwhitney": [_FORMULA, _PERMUTATION],
+    "stats.correlation": [_FORMULA, _PERMUTATION],
+    "stats.chi2": [_FORMULA, _PERMUTATION],
+    "stats.anova": [_FORMULA, _PERMUTATION, _STATSMODELS],
+    "stats.kruskal": [_FORMULA, _PERMUTATION],
+    "stats.regression": [_FORMULA, _STATSMODELS],
+    "stats.adjust": [CheckPlan("alt_algorithm", "stats.check_adjust", _adjusted, 1, required=True, must_pass=True)],
     "phys.evaluate": [
         CheckPlan("plausibility", "phys.check_plausibility", _plausibility, 0, required=True, must_pass=True),
         CheckPlan("dimensional", "phys.check_dimensions", _phys_dims, 1, required=True, must_pass=True),

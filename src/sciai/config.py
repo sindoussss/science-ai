@@ -48,6 +48,18 @@ class PhysicsConfig:
 
 
 @dataclass
+class DataConfig:
+    alpha: float = 0.05            # significance level when the question gives none
+    max_rows: int = 5_000_000      # a larger file is refused at import instead of exhausting memory
+    max_file_mb: int = 400         # the tool sandbox has 3 GB; pandas needs several times the file size
+    data_dir: str = "~/.sciai/datasets"  # imported files, stored by their SHA-256
+
+    @property
+    def path(self) -> Path:
+        return Path(self.data_dir).expanduser()
+
+
+@dataclass
 class StoreConfig:
     db_path: str = "~/.sciai/knowledge.db"
 
@@ -59,6 +71,7 @@ class Config:
     risk: RiskConfig = field(default_factory=RiskConfig)
     tools: ToolsConfig = field(default_factory=ToolsConfig)
     physics: PhysicsConfig = field(default_factory=PhysicsConfig)
+    data: DataConfig = field(default_factory=DataConfig)
     store: StoreConfig = field(default_factory=StoreConfig)
 
     @property

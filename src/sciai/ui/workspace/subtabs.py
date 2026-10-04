@@ -1,4 +1,5 @@
-"""Sub-tab row of the node view (Code | Execution Log | Messages | Environment | Review).
+"""Sub-tab row of the node view (Code | Data | Plot | Execution Log | Messages | Environment | Review;
+Data and Plot only for nodes that have them).
 
 A row of text buttons with exact spacing instead of a QTabBar: QTabBar adds per-tab style
 margins that can't be set from QSS, so the 18px gaps and 16px side padding couldn't be held.
@@ -7,7 +8,9 @@ QTabWidget the panel and tests use (count, tabText, currentIndex, setCurrentInde
 setTabIcon, widget).
 
 When the row is too narrow (a workspace dragged toward its minimum), the gaps shrink to 12px,
-then the side padding to 12px, then the longest label elides; labels never overlap or clip.
+then the side padding to 12px, then tabs that have a short label use it ("Log" for "Execution
+Log", needed when Data or Plot is shown at the narrowest workspace), then the longest label
+elides; labels never overlap or clip.
 """
 from __future__ import annotations
 
@@ -87,10 +90,15 @@ class SubTabs(QWidget):
         lay.addWidget(self.stack, 1)
         self.gap = GAP
         self.side = SIDE
+        self.hidden: set[int] = set()
+        self.short: dict[int, str] = {}
 
     # QTabWidget-like API ------------------------------------------------------------
-    def addTab(self, widget: QWidget, label: str) -> int:  # noqa: N802
+    def addTab(self, widget: QWidget, label: str, short: str | None = None) -> int:  # noqa: N802
+        """``short`` is drawn instead of ``label`` when the row is too narrow for every full label."""
         i = len(self.buttons)
+        if short:
+            self.short[i] = short
         b = _TabButton(self.row)
         b.setObjectName("subTab")
         b.setCheckable(True)
@@ -122,7 +130,7 @@ class SubTabs(QWidget):
         return self.stack.currentIndex()
 
     def setCurrentIndex(self, i: int) -> None:  # noqa: N802
-        if not 0 <= i < len(self.buttons):
+        if not 0 <= i < len(self.buttons) or i in self.hidden:
             return
         self.buttons[i].setChecked(True)
         changed = i != self.stack.currentIndex()
@@ -135,6 +143,30 @@ class SubTabs(QWidget):
         self.buttons[i].setIcon(ic)
         self.relayout()
 
+    def indexOf(self, label: str) -> int:  # noqa: N802
+        return self.labels.index(label) if label in self.labels else -1
+
+    def isTabVisible(self, i: int) -> bool:  # noqa: N802
+        return i not in self.hidden
+
+    def setTabVisible(self, i: int, visible: bool) -> None:  # noqa: N802
+        """Show or hide a tab (Data and Plot appear only for nodes that have them). Hiding the
+        current tab moves to the first visible one."""
+        if visible == (i not in self.hidden):
+            return
+        if visible:
+            self.hidden.discard(i)
+            self.buttons[i].show()
+        else:
+            self.hidden.add(i)
+            self.buttons[i].hide()
+            if self.currentIndex() == i:
+                self.setCurrentIndex(next(k for k in range(len(self.buttons)) if k not in self.hidden))
+        self.relayout()
+
+    def visible_indexes(self) -> list[int]:
+        return [i for i in range(len(self.buttons)) if i not in self.hidden]
+
     # layout ------------------------------------------------------------------------
     @staticmethod
     def _natural(b: _TabButton, text: str) -> int:
@@ -142,37 +174,61 @@ class SubTabs(QWidget):
         return b.content_width(text)
 
     def needed_width(self, gap: int = GAP) -> int:
-        return 2 * SIDE + sum(self._natural(b, t) for b, t in zip(self.buttons, self.labels)) + \
-            gap * max(0, len(self.buttons) - 1)
+        shown = self.visible_indexes()
+        return 2 * SIDE + sum(self._natural(self.buttons[i], self.labels[i]) for i in shown) + \
+            gap * max(0, len(shown) - 1)
 
     def relayout(self) -> None:
-        if not self.buttons:
+        shown = self.visible_indexes()
+        if not shown:
             return
+        buttons = [self.buttons[i] for i in shown]
+        labels = [self.labels[i] for i in shown]
         avail = self.row.width()
-        natural = [self._natural(b, t) for b, t in zip(self.buttons, self.labels)]
-        n_gaps = max(1, len(self.buttons) - 1)
+        natural = [self._natural(b, t) for b, t in zip(buttons, labels)]
+        n_gaps = max(1, len(buttons) - 1)
         room = avail - 2 * SIDE - sum(natural)
         self.gap = max(MIN_GAP, min(GAP, room // n_gaps)) if room > 0 else MIN_GAP
         # still too wide at 12px gaps: give up side padding (down to 12), then elide the widest label
-        n_real = len(self.buttons) - 1
+        n_real = len(buttons) - 1
         over = 2 * SIDE + sum(natural) + self.gap * n_real - avail
         self.side = SIDE - min(SIDE - MIN_SIDE, max(0, (over + 1) // 2))
         widths = list(natural)
         over = 2 * self.side + sum(widths) + self.gap * n_real - avail
+        # then use a tab's short label ("Log" for "Execution Log"), the biggest saving first
+        for k in sorted(range(len(labels)), key=lambda k: natural[k] - self._short_width(shown[k]), reverse=True):
+            if over <= 0:
+                break
+            short = self.short.get(shown[k])
+            if short:
+                labels[k] = short
+                saved = natural[k] - self._natural(buttons[k], short)
+                natural[k] = widths[k] = natural[k] - saved
+                over -= saved
+        if labels != [self.labels[i] for i in shown]:  # short labels freed room: widen the gaps again
+            room = avail - 2 * SIDE - sum(natural)
+            self.gap = max(MIN_GAP, min(GAP, room // n_gaps)) if room > 0 else MIN_GAP
+            over = 2 * SIDE + sum(natural) + self.gap * n_real - avail
+            self.side = SIDE - min(SIDE - MIN_SIDE, max(0, (over + 1) // 2))
+            over = 2 * self.side + sum(widths) + self.gap * n_real - avail
         if over > 0:  # elide the widest label just enough
             k = max(range(len(widths)), key=lambda i: widths[i])
             widths[k] = max(24, widths[k] - over)
         x = self.side
-        for b, text, w, nat in zip(self.buttons, self.labels, widths, natural):
-            shown = text
+        for i, b, text, w, nat in zip(shown, buttons, labels, widths, natural):
+            drawn = text
             if w < nat:
                 icon_w = 0 if b.icon().isNull() else ICON + ICON_SPACING
-                shown = QFontMetricsF(b.font()).elidedText(text, Qt.TextElideMode.ElideRight, w - icon_w - 1)
-            b.setText(shown)
-            b.setToolTip(text if shown != text else "")
+                drawn = QFontMetricsF(b.font()).elidedText(text, Qt.TextElideMode.ElideRight, w - icon_w - 1)
+            b.setText(drawn)
+            b.setToolTip(self.labels[i] if drawn != self.labels[i] else "")
             b.setGeometry(QRect(x, 0, w, ROW_H - 2))
             x += w + self.gap
         self.row.update()
+
+    def _short_width(self, i: int) -> int:
+        short = self.short.get(i)
+        return self._natural(self.buttons[i], short) if short else self._natural(self.buttons[i], self.labels[i])
 
     def label_rect(self, i: int) -> QRect:
         """The drawn label (text, plus the icon when there is one) in row coordinates: buttons are
@@ -180,5 +236,5 @@ class SubTabs(QWidget):
         return self.buttons[i].geometry()
 
     def label_gaps(self) -> list[int]:
-        rs = [self.label_rect(i) for i in range(self.count())]
+        rs = [self.label_rect(i) for i in self.visible_indexes()]
         return [b.left() - (a.right() + 1) for a, b in zip(rs, rs[1:])]

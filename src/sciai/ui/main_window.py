@@ -6,9 +6,10 @@ import threading
 from pathlib import Path
 from typing import Any, Callable
 
-from PyQt6.QtCore import QPoint, Qt, QTimer
+from PyQt6.QtCore import QEvent, QObject, QPoint, Qt, QTimer
 from PyQt6.QtGui import QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
+    QApplication,
     QFileDialog,
     QHBoxLayout,
     QDialog,
@@ -46,6 +47,9 @@ WORKSPACE_INSET = 10  # the workspace card sits 10px in from the divider
 HANDLE_W = 5  # splitter grab area; the 1px divider is drawn at its center
 MIN_SIZE = (1200, 720)
 # Short check names for the chat table (the Review tab has the long ones).
+# Files that import as datasets (read twice, recorded, offered to the model); anything else is
+# copied to the Files folder as before. A .txt file is not taken for a table.
+DATA_SUFFIXES = (".csv", ".tsv", ".tab", ".xlsx", ".xlsm")
 CHECK_SHORT = {"symbolic_vs_numeric": "numeric", "alt_algorithm": "alt. method", "known_value": "known value",
                "units": "units", "inputs_verified": "inputs"}
 
@@ -66,6 +70,40 @@ def fmt_duration(ms: float) -> str:
     return f"{ms:.0f} ms" if ms < 1000 else fmt_elapsed(ms / 1000)
 
 
+def local_files(event: QEvent) -> list[str]:
+    """The local file paths a drag carries (empty for text, links and folders)."""
+    mime = event.mimeData()
+    if mime is None or not mime.hasUrls():
+        return []
+    paths = [u.toLocalFile() for u in mime.urls() if u.isLocalFile()]
+    return [p for p in paths if p and Path(p).is_file()]
+
+
+class FileDrops(QObject):
+    """Application-level filter: files dropped anywhere on the window are added, whichever child
+    widget is under the cursor (the composer or the graph would otherwise take the drop as text
+    or ignore it). Drags that carry no local files pass through untouched."""
+
+    def __init__(self, window: "MainWindow") -> None:
+        super().__init__(window)
+        self.window_ = window
+
+    def eventFilter(self, obj: QObject, event: QEvent) -> bool:  # noqa: N802
+        kind = event.type()
+        if kind not in (QEvent.Type.DragEnter, QEvent.Type.DragMove, QEvent.Type.Drop):
+            return False
+        if not isinstance(obj, QWidget) or obj.window() is not self.window_:
+            return False
+        paths = local_files(event)
+        if not paths:
+            return False
+        event.setDropAction(Qt.DropAction.CopyAction)
+        event.accept()
+        if kind == QEvent.Type.Drop:
+            self.window_.add_paths(paths)
+        return True
+
+
 class MainWindow(QMainWindow):
     def __init__(self, rt: Runtime, theme: Theme, confirmer: RootConfirmer) -> None:
         super().__init__()
@@ -81,6 +119,10 @@ class MainWindow(QMainWindow):
         self.session_id: str | None = None
         self._task_nodes: list[str] = []  # nodes added during the running task, in order
         self._task_running = False
+        # Controller runs (a task or a pin re-check) in flight. Only these show Stop and take typed
+        # text as steering: other engine jobs (an import, opening a session, a lock) are quick and
+        # can't be steered, so a question typed meanwhile queues behind them as a new task.
+        self._runs = 0
         # Runs are attached to their node right after node_added; look the durations up shortly after.
         # Owned by the window (not QTimer.singleShot) so it can be stopped before the database closes.
         self._durations_timer = QTimer(self)
@@ -126,7 +168,6 @@ class MainWindow(QMainWindow):
                   context=Qt.ShortcutContext.WindowShortcut)
 
         self.executor.done.connect(self._job_done)
-        self.executor.busy.connect(self.chat.set_busy)
         self.bridge.event.connect(self._on_event)
         self.confirmer.ask.connect(self._confirm_root)
         self.chat.submitted.connect(self._submit)
@@ -153,6 +194,11 @@ class MainWindow(QMainWindow):
         self.sidebar.toggle_workspace.connect(self.toggle_workspace)
         self.sidebar.settings.connect(self._open_environment)
         self.sidebar.add_file.connect(self._add_file)
+
+        self.sidebar.remove_dataset.connect(self._remove_dataset)
+        self.setAcceptDrops(True)
+        self._drops = FileDrops(self)
+        QApplication.instance().installEventFilter(self._drops)
 
         install_overlay_scrollbars(self)
 
@@ -284,8 +330,16 @@ class MainWindow(QMainWindow):
             self.workspace.show_node_tab()
 
     # --------------------------------------------------------------- chat
+    def _run_started(self) -> None:
+        self._runs += 1
+        self.chat.set_busy(True)
+
+    def _run_finished(self) -> None:
+        self._runs = max(0, self._runs - 1)
+        self.chat.set_busy(self._runs > 0)
+
     def _submit(self, text: str) -> None:
-        if self.executor.is_busy:
+        if self._runs:
             self.rt.controller.steer(text)
             self.chat.add_system(f"Steer: {text}")
             return
@@ -297,6 +351,7 @@ class MainWindow(QMainWindow):
         self.sidebar.refresh(sid)
         self._task_nodes = []
         self._task_running = True
+        self._run_started()
         self.chat.start_run()
         self.workspace.set_live(True)
         self.sidebar.set_running(sid, 0)
@@ -304,6 +359,7 @@ class MainWindow(QMainWindow):
 
     def _task_done(self, result: TaskResult | None, err: Exception | None) -> None:
         self._task_running = False
+        self._run_finished()
         self._refresh_durations()
         self.chat.finish_run()
         self.workspace.set_live(False)
@@ -401,11 +457,13 @@ class MainWindow(QMainWindow):
         self.rt.controller.steer(f"Pinned note {number} on {handle}: {text}")
 
         def done(msg: Any, err: Exception | None) -> None:
+            self._run_finished()
             if err:
                 self.chat.add_notice(str(err))
             else:
                 self.chat.add_assistant(str(msg))
             self._show(node_id)
+        self._run_started()
         self._submit_job(lambda: self.rt.controller.recheck(node_id, text), done)
 
     def _delete(self, node_id: str) -> None:
@@ -415,14 +473,85 @@ class MainWindow(QMainWindow):
             return
         self._engine_job(lambda: self.rt.engine.delete(node_id))
 
+    # -------------------------------------------------------------- files
     def _add_file(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "Add a file")
-        if not path:
+        paths, _ = QFileDialog.getOpenFileNames(
+            self, "Add files", "", "Data files (*.csv *.tsv *.tab *.xlsx *.xlsm);;All files (*)")
+        self.add_paths(paths)
+
+    def add_paths(self, paths: list[str]) -> None:
+        """Add files from the dialog or a drop: data files are imported, others copied to Files."""
+        for path in paths:
+            src = Path(path)
+            if not src.is_file():
+                self.chat.add_notice(f"{src.name} is not a file and was not added.")
+            elif src.suffix.lower() in DATA_SUFFIXES:
+                self._import_data(src)
+            else:
+                try:
+                    FILES_DIR.mkdir(parents=True, exist_ok=True)
+                    dst = FILES_DIR / src.name
+                    shutil.copy2(src, dst)
+                except OSError as e:
+                    self.chat.add_notice(f"{src.name} could not be added: {e}")
+                else:
+                    self._file_message(f"Added {dst.name} to Files.")
+
+    def _file_message(self, text: str) -> None:
+        """A system line in the chat, kept with the session so it shows again when reopened."""
+        self.chat.add_system(text)
+        if self.session_id:
+            self.rt.repo.add_message(self.session_id, "system", text)
+
+    def _import_data(self, src: Path) -> None:
+        """Import on the engine thread: it shares the tool sandbox with the controller, so an
+        import queues behind a running task instead of racing it."""
+        later = " when the current task finishes" if self._runs else ""
+        self.chat.add_system(f"Importing {src.name}{later}…")
+
+        def run() -> tuple[Any, Any]:
+            before = self.rt.repo.dataset_by_name(src.name)
+            return self.rt.import_file(src), before
+
+        self._submit_job(run, lambda r, err: self._imported(src, r, err))
+
+    def _imported(self, src: Path, result: Any, err: Exception | None) -> None:
+        if err is not None:
+            self.chat.add_notice(f"{src.name} was not imported: {err}")
             return
-        FILES_DIR.mkdir(parents=True, exist_ok=True)
-        dst = FILES_DIR / Path(path).name
-        shutil.copy2(path, dst)
-        self.chat.add_system(f"Added {dst.name} to Files")
+        res, before = result
+        rec = res.record
+        shape = f"{rec.rows:,} rows × {rec.columns} columns"
+        if res.reused:
+            text = (f"{rec.name} is already imported ({shape}); these are the same bytes, so results "
+                    "already computed on it are reused.")
+        else:
+            method = res.check.get("method", "a second reader")
+            text = (f"Imported {rec.name}: {shape}. It was read twice, by pandas and by the {method}, "
+                    "and both reads agree. Ask about it by name.")
+            if before is not None and before.sha256 != rec.sha256:
+                text += (f" This replaces the earlier {before.name}; answers computed on the earlier "
+                         "file are not reused.")
+        self._file_message(text)
+
+    def _remove_dataset(self, name: str) -> None:
+        msg = (f"Remove {name}? Every result, plot and answer built on it is invalidated, in every session. "
+               "The stored copy is deleted unless another import uses the same file.")
+        if QMessageBox.question(self, "Remove dataset", msg) != QMessageBox.StandardButton.Yes:
+            return
+
+        def done(hit: Any, err: Exception | None) -> None:
+            if err is not None:
+                self.chat.add_notice(f"{name} could not be removed: {err}")
+                return
+            tail = ("Nothing had used it yet." if not hit else
+                    "Everything built on it was invalidated.")
+            self._file_message(f"Removed {name}. {tail}")
+            self.sidebar.refresh(self.session_id)
+            if self.node_panel.node is not None:
+                self._show(self.node_panel.node.id)
+
+        self._submit_job(lambda: self.rt.remove_dataset(name), done)
 
     def _show_tools_menu(self) -> None:
         menu = QMenu(self)
@@ -520,6 +649,9 @@ class MainWindow(QMainWindow):
         return dict(self._env)
 
     def closeEvent(self, event) -> None:  # noqa: N802, ANN001
+        app = QApplication.instance()
+        if app is not None:
+            app.removeEventFilter(self._drops)
         self._durations_timer.stop()
         self.rt.controller.stop()
         self.confirmer.answer(False)

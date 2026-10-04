@@ -19,6 +19,8 @@ from sciai.config import Config
 from sciai.controller import lookup
 from sciai.controller.answer import render
 from sciai.controller.provenance import numbers_in, unsourced
+from sciai.domains.data.datasets import load_args
+from sciai.domains.data.report import diagnostic_text
 from sciai.domains.physics import quantities as Q
 from sciai.domains.physics.assumptions import checklist, normalize_type
 from sciai.graph.digest import build_digest
@@ -42,7 +44,8 @@ from sciai.tools.registry import ToolSpec
 from sciai.tools.registry import get as get_tool
 from sciai.tools.sandbox import Runner
 from sciai.verify import ladder
-from sciai.verify.risk_rules import assess
+from sciai.store.repository import DatasetRecord
+from sciai.verify.risk_rules import assess, family_members, family_of
 from sciai.verify.verifier import Verifier, VerifyOutcome
 
 log = logging.getLogger(__name__)
@@ -54,6 +57,10 @@ PROMPT_MARGIN_TOKENS = 200
 # {"statement": edited text or None, "rejected": [assumption texts the user unticked]}.
 ConfirmRoot = Callable[[Node], "bool | str | dict[str, Any]"]
 GIVEN_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,30}$")
+HANDLE = re.compile(r"^n[0-9]+$")
+MAX_DATASETS_IN_PROMPT = 8
+MAX_SCHEMA_CHARS = 1500
+SIGNIFICANT = re.compile(r"\bsignifican", re.IGNORECASE)
 SYMBOL_ASSUMPTIONS = ("real", "positive", "negative", "nonnegative", "nonpositive", "integer", "nonzero")
 
 
@@ -148,7 +155,7 @@ class Controller:
     # ---------------------------------------------------------------- phases
     def _run(self, question: str) -> TaskResult:
         hit = lookup.verified_answer_for_question(self.engine.repo, question)
-        if hit is not None:
+        if hit is not None and not self._stale_data(hit):
             return self._reuse_answer(hit)
 
         root_or_result = self._formalize(question)
@@ -163,6 +170,18 @@ class Controller:
             if done is not None:
                 return done
         return self._loop(root, observation)
+
+    def _stale_data(self, final: Node) -> bool:
+        """An answer read a dataset that has since been re-imported with different contents
+        (the same name, other bytes): asking again must use the current file."""
+        repo = self.engine.repo
+        for nid in self.engine.ancestors(final.id):
+            n = self.engine.resolve(nid)
+            if n.tool_name == "data.load" and n.tool_inputs:
+                rec = repo.dataset_by_name(n.tool_inputs.get("name", ""))
+                if rec is None or rec.sha256 != n.tool_inputs.get("sha256"):
+                    return True
+        return False
 
     def _reuse_answer(self, final: Node) -> TaskResult:
         self.engine.link_existing(final.id)
@@ -179,14 +198,17 @@ class Controller:
         def validate(a: Action) -> None:
             goal = a.get("goal")
             if goal:
-                self._validate_tool_call(goal.get("tool", ""), goal.get("args", {}), role.name)
+                spec = self._validate_tool_call(goal.get("tool", ""), goal.get("args", {}), role.name)
+                self._validate_data_args(spec, goal.get("args", {}), question)
             for name, kind in (a.get("assumptions") or {}).items():
                 if kind not in SYMBOL_ASSUMPTIONS:
                     raise ActionError(f"assumption {kind!r} for {name!r} is not allowed")
             givens.clear()
             givens.update(self._normalize_givens(a.get("givens") or {}))
 
-        user = f"QUESTION:\n{question}\n\nReply with one JSON formalize action."
+        data = self._datasets_text(question)
+        user = f"QUESTION:\n{question}\n\n" + (f"DATASETS (imported files: name, rows, columns):\n{data}\n\n"
+                                                if data else "") + "Reply with one JSON formalize action."
         try:
             action = self._ask(role.name, user, ("formalize",), validate)
         except ActionError as exc:
@@ -268,7 +290,11 @@ class Controller:
     def _try_goal(self, root: Node, goal: dict[str, Any]) -> tuple[TaskResult | None, str]:
         """If the formalized goal is one tool call, reuse or run it without asking the model."""
         tool, args = goal["tool"], dict(goal.get("args") or {})
-        fp, err = lookup.canonical_fingerprint(self.runner, tool, args)
+        try:
+            run_args, _ = self._prepare_dataset(get_tool(tool), args)
+        except StepError as exc:
+            return None, f"The goal could not be run ({exc}). Plan the first step."
+        fp, err = lookup.canonical_fingerprint(self.runner, tool, run_args)
         if fp is None:
             return None, f"The goal could not be parsed ({err}). Plan the first step."
         hit = lookup.verified_by_fingerprint(self.engine.repo, fp)
@@ -356,7 +382,10 @@ class Controller:
         with self._notes_lock:
             notes, self._notes = self._notes, []
         notes_text = "".join(f"\nUSER NOTE: {n}" for n in notes)
-        head = f"TASK: {root.content}\n\nGRAPH (handle [status] tool(args) = result <- depends_on):\n"
+        data = self._datasets_text((root.tool_inputs or {}).get("question", root.content))
+        head = f"TASK: {root.content}\n\n" + (
+            f"DATASETS (imported files; use the name or a dataset node handle):\n{data}\n\n" if data else "") + \
+            "GRAPH (handle [status] tool(args) = result <- depends_on):\n"
         tail = f"\n\nLAST RESULT:\n{observation}{notes_text}\n\nReply with one JSON action."
         budget = (self.cfg.model.num_ctx - self.cfg.model.num_predict - estimate_tokens(system)
                   - estimate_tokens(head) - estimate_tokens(tail) - PROMPT_MARGIN_TOKENS)
@@ -389,6 +418,8 @@ class Controller:
     def _validate_step(self, a: Action, role: str) -> None:
         if a.kind == "call_tool":
             spec = self._validate_tool_call(a["tool"], a["args"], role)
+            root = self.engine.root()
+            self._validate_data_args(spec, a["args"], (root.tool_inputs or {}).get("question", "") if root else "")
             if spec.node_arg is not None:
                 node = self._resolve_handle(str(a["args"].get(spec.node_arg, "")))
                 if node.status in TERMINAL_BAD:
@@ -409,10 +440,14 @@ class Controller:
                 raise ActionError(f"check {a['check']!r} is not offered for {a['node']}; offered: {sorted(offered)}")
         elif a.kind == "finish":
             check_answer_template(a["answer_template"], a["answer_nodes"])
+            kinds = set()
             for ref in a["answer_nodes"]:
                 node = self._resolve_handle(ref)
                 if node.status in TERMINAL_BAD:
                     raise ActionError(f"{ref} is {node.status.value} and cannot be in the answer")
+                kinds.add((node.result or {}).get("kind"))
+            if SIGNIFICANT.search(a["answer_template"]) and not kinds & {"stats", "adjusted"}:
+                raise ActionError('the word "significant" needs the test result node in answer_nodes')
 
     # ---------------------------------------------------------------- actions
     def _dispatch(self, root: Node, a: Action, role: str) -> StepOutcome:
@@ -447,7 +482,9 @@ class Controller:
         if root_assumptions and "assumptions" in spec.schema.get("properties", {}):
             args.setdefault("assumptions", root_assumptions)
 
-        run_args = args
+        run_args, dataset_id = self._prepare_dataset(spec, args)
+        if dataset_id is not None:
+            deps = list(dict.fromkeys([*deps, dataset_id]))
         if spec.node_arg is not None:
             # the handle becomes the node's id (handles are per session) and its result is the data
             ref = self.engine.resolve(str(args.get(spec.node_arg, "")))
@@ -455,7 +492,7 @@ class Controller:
                 raise StepError(f"{self.engine.handle(ref.id)} is {ref.status.value}")
             args[spec.node_arg] = ref.id
             deps = list(dict.fromkeys([*deps, ref.id]))
-            run_args = {**args, "data": ref.result}
+            run_args = {**run_args, spec.node_arg: ref.id, "data": ref.result}
 
         fp, err = lookup.canonical_fingerprint(self.runner, tool, run_args)
         if fp is None:
@@ -469,6 +506,10 @@ class Controller:
             hit = lookup.verified_by_fingerprint(self.engine.repo, fp)
             if hit is not None:
                 handle = self.engine.link_existing(hit.id)
+                for dep in self.engine.dependencies(hit.id):  # its dataset and test assumptions
+                    if self.engine.resolve(dep).type in (NodeType.ENTITY, NodeType.ASSUMPTION) \
+                            and dep not in self.engine.nodes:
+                        self.engine.link_existing(dep)
                 self._last_tool_node = hit
                 return StepOutcome([f"Reused verified result {handle} = {hit.display_result()}"])
         hint = lookup.hint_by_fingerprint(self.engine.repo, fp)
@@ -481,7 +522,10 @@ class Controller:
                     sources += [n.content, _problem_sources(n)]
                 else:
                     sources += [n.content if n.type == NodeType.ASSUMPTION else "", n.tool_inputs, n.result]
-        scanned = {k: v for k, v in args.items() if k != spec.node_arg}  # a node id is not a number
+        if dataset_id is not None:
+            sources.append({"alpha": self.cfg.data.alpha})  # the configured significance level
+        # a node id is not a number
+        scanned = {k: v for k, v in args.items() if k not in (spec.node_arg, spec.dataset_arg)}
         missing = unsourced(scanned, sources, self.cfg.risk.structural_int_max)
 
         outcome = self.runner.run(tool, run_args, self.cfg.tools.timeout)
@@ -511,8 +555,11 @@ class Controller:
             raise StepError(str(exc)) from None
         self.engine.repo.attach_run(run_id, node.id)
         self._last_tool_node = node
+        if node.result.get("kind") == "stats":
+            self._diagnostic_assumptions(node)
         h = self.engine.handle(node.id)
         lines = [f"{h} = {node.display_result()}"]
+        lines += self._alternative_offer(node)
         if missing:
             lines.append(f"{h} uses numbers not found in the problem or its inputs ({', '.join(missing)}); "
                          "it will be checked.")
@@ -642,11 +689,19 @@ class Controller:
 
     # ------------------------------------------------------------------ final
     def _finalize(self, root: Node, template: str, handles: list[str]) -> TaskResult:
+        template, handles, family_note = self._family_rule(root, template, list(handles))
         nodes = [self.engine.resolve(h) for h in handles]
         all_verified = all(n.status == Status.VERIFIED for n in nodes)
         assumed = self._confirmed_assumptions(root)
+        tested, doubtful = self._test_assumptions(nodes)
+        assumed += [t for t in tested if t not in assumed]
+        content = render(self.engine, template)
+        if doubtful:
+            content += "\n" + "\n".join(f"Caution: {d}." for d in doubtful)
+        if family_note:
+            content += f"\n{family_note}"
         final = Node(session_id="", layer=Layer.REASONING, type=NodeType.FINAL, title="Answer",
-                     content=render(self.engine, template),
+                     content=content,
                      tool_inputs={"template": template, "answer_nodes": [n.id for n in nodes],
                                   "assumptions": assumed})
         if not all_verified:
@@ -661,6 +716,179 @@ class Controller:
             self.engine.set_status(final.id, Status.VERIFIED, "all answer values verified")
         return TaskResult("answered", answer=final.content, final_node=final.id, verified=all_verified,
                           assumptions=assumed)
+
+    # ------------------------------------------------------------------ data
+    def _datasets_text(self, question: str) -> str:
+        """The imported datasets the model may use, by schema (names, types, units, missing counts,
+        category levels): never row values. Datasets the question names come first."""
+        repo = self.engine.repo
+        named = repo.datasets_named_in(question)
+        seen = {r.id for r in named}
+        recs = named + [r for r in repo.current_datasets(MAX_DATASETS_IN_PROMPT) if r.id not in seen]
+        lines = []
+        for rec in recs[:MAX_DATASETS_IN_PROMPT]:
+            text = rec.schema_text()
+            lines.append(text if len(text) <= MAX_SCHEMA_CHARS else text[: MAX_SCHEMA_CHARS - 4] + " ...")
+        return "\n".join(lines)
+
+    def _dataset_record(self, name: str) -> DatasetRecord | None:
+        repo = self.engine.repo
+        rec = repo.dataset_by_name(name)
+        if rec is not None:
+            return rec
+        stem = [r for r in repo.current_datasets(500) if r.name.rsplit(".", 1)[0].lower() == name.strip().lower()]
+        return stem[0] if len(stem) == 1 else None
+
+    def _validate_data_args(self, spec: ToolSpec, args: dict[str, Any], question: str) -> None:
+        """A dataset is named, never passed as data; alpha comes from the question or the config."""
+        if spec.dataset_arg is not None:
+            ref = args.get(spec.dataset_arg)
+            if not isinstance(ref, str):
+                raise ActionError(f"{spec.dataset_arg} must be a dataset node handle like n3 or an imported file "
+                                  "name; never pass data")
+            if HANDLE.match(ref.strip()):
+                if ref.strip() in self.engine.by_handle:
+                    node = self.engine.resolve(ref.strip())
+                    if (node.result or {}).get("kind") != "dataset":
+                        raise ActionError(f"{ref} is not a dataset")
+                    if node.status in TERMINAL_BAD:
+                        raise ActionError(f"{ref} is {node.status.value}")
+                else:
+                    raise ActionError(f"unknown node {ref}")
+            elif self._dataset_record(ref) is None:
+                names = [r.name for r in self.engine.repo.current_datasets(20)]
+                raise ActionError(f"no imported dataset is named {ref!r}; imported: {', '.join(names) or 'none'}")
+        alpha = args.get("alpha")
+        if alpha is not None and "alpha" in spec.schema.get("properties", {}) and \
+                not numbers_in(alpha) <= numbers_in(question):
+            raise ActionError(f"alpha {alpha} is not in the question; leave alpha out to use "
+                              f"{self.cfg.data.alpha}")
+
+    def _dataset_node(self, rec: DatasetRecord) -> Node:
+        """The dataset as a node: reused if this session or the store already has it read and
+        verified, else read (data.load) and verified by an independent re-read. It depends on
+        nothing, so it is shared by every question that uses the file."""
+        args = load_args(rec, self.cfg.data)
+        fp, err = lookup.canonical_fingerprint(self.runner, "data.load", args)
+        if fp is None:
+            raise StepError(err or f"{rec.name} could not be read")
+        for n in self.engine.nodes.values():
+            if n.fingerprint == fp and n.type == NodeType.ENTITY and n.status not in TERMINAL_BAD:
+                return n
+        hit = lookup.verified_by_fingerprint(self.engine.repo, fp)
+        if hit is not None:
+            self.engine.link_existing(hit.id)
+            return self.engine.resolve(hit.id)
+        out = self.runner.run("data.load", args, self.cfg.tools.timeout)
+        run_id = self.engine.repo.log_tool_run(self.engine.session_id or "", None, "data.load", args,
+                                               out.value if out.ok else None, out.error, out.duration_ms)
+        if not out.ok:
+            raise StepError(f"{rec.name} could not be read: {out.error}")
+        node = Node(session_id="", layer=Layer.DOMAIN, type=NodeType.ENTITY, title=f"dataset {rec.name}",
+                    content=rec.schema_text(), content_canonical=fp, fingerprint=fp, tool_name="data.load",
+                    tool_inputs=args, result=out.value["result"], role="controller")
+        self.engine.add_node(node, [], tool_domain=Domain.DATA)
+        self.engine.repo.attach_run(run_id, node.id)
+        outcome = self.verifier.verify(node)
+        if outcome.status != "verified":
+            raise StepError(f"{rec.name} did not read the same way twice; re-import it ({outcome.status})")
+        return self.engine.resolve(node.id)
+
+    def _prepare_dataset(self, spec: ToolSpec, args: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
+        """For a data tool: store the dataset node's id in ``args`` (fingerprints use the data's
+        key, not the handle), fill in the configured alpha, and return the arguments the tool
+        runs with (the node's descriptor in place of the name) and the dataset node's id."""
+        if spec.dataset_arg is None or spec.dataset_arg not in args:
+            return args, None
+        ref = str(args[spec.dataset_arg]).strip()
+        if ref in self.engine.by_handle or ref in self.engine.nodes:
+            node = self.engine.resolve(ref)
+            if (node.result or {}).get("kind") != "dataset" or node.status in TERMINAL_BAD:
+                raise StepError(f"{self.engine.handle(node.id)} is not a usable dataset")
+        else:
+            rec = self._dataset_record(ref)
+            if rec is None:
+                raise StepError(f"no imported dataset is named {ref!r}")
+            node = self._dataset_node(rec)
+        args[spec.dataset_arg] = node.id
+        if "alpha" in spec.schema.get("properties", {}) and args.get("alpha") is None:
+            args["alpha"] = self.cfg.data.alpha
+        return {**args, spec.dataset_arg: node.result}, node.id
+
+    def _diagnostic_assumptions(self, node: Node) -> None:
+        """Each assumption a test relies on becomes an assumption node the test depends on, with
+        its diagnostic. A diagnostic that speaks against it marks it doubtful, not failed: failing
+        it would invalidate the test and everything after it, including a robust alternative."""
+        for d in (node.result or {}).get("diagnostics") or []:
+            doubtful = d.get("ok") is False
+            a = Node(session_id="", layer=Layer.REASONING, type=NodeType.ASSUMPTION, title=d["label"][:80],
+                     content=diagnostic_text(d), tool_inputs={"source": "diagnostic", "diagnostic": d},
+                     locked=True, role="verifier", flags=[f"doubtful: {d.get('note', '')}"] if doubtful else [])
+            self.engine.add_node(a, tool_domain=Domain.DATA)
+            self.engine.add_edge(node.id, a.id, EdgeKind.DEPENDS_ON)
+
+    def _alternative_offer(self, node: Node) -> list[str]:
+        """A doubtful assumption does not block the answer; the model is told the robust
+        alternative so it can run that test as well."""
+        r = node.result or {}
+        bad = [d for d in r.get("diagnostics") or [] if d.get("ok") is False]
+        if r.get("kind") != "stats" or not bad:
+            return []
+        h = self.engine.handle(node.id)
+        what = "; ".join(f"{d['label']} is doubtful ({d.get('note', '')})" for d in bad)
+        alternative = {"welch_t": "stats.mannwhitney", "student_t": "stats.ttest with equal_var false, or "
+                       "stats.mannwhitney", "paired_t": "a sign-flip permutation is its check; report it with "
+                       "the caution", "one_sample_t": "report it with the caution", "anova": "stats.kruskal",
+                       "pearson": "stats.correlation with method spearman",
+                       "chi2": "combine sparse levels with data.derive or data.filter"}.get(r.get("test"))
+        return [f"For {h}: {what}." + (f" The alternative is {alternative}." if alternative else "")]
+
+    def _test_assumptions(self, nodes: list[Node]) -> tuple[list[str], list[str]]:
+        """(assumption texts, doubtful ones) behind the answer's tests."""
+        texts, doubtful = [], []
+        for n in nodes:
+            for a in sorted((self.engine.resolve(d) for d in self.engine.dependencies(n.id)),
+                            key=lambda x: x.created_at):
+                if a.type != NodeType.ASSUMPTION or (a.tool_inputs or {}).get("source") != "diagnostic" \
+                        or a.status in TERMINAL_BAD:
+                    continue
+                if a.content not in texts:
+                    texts.append(a.content)
+                if any(f.startswith("doubtful") for f in a.flags) and a.content not in doubtful:
+                    doubtful.append(a.content)
+        return texts, doubtful
+
+    def _family_rule(self, root: Node, template: str, handles: list[str]) -> tuple[str, list[str], str]:
+        """Several tests on the same data: run the Holm adjustment over all of them and add it
+        to the answer. Returns the template, the answer handles and a note when it could not run."""
+        nodes = [self.engine.resolve(h) for h in handles]
+        if any((n.result or {}).get("kind") == "adjusted" for n in nodes):
+            return template, handles, ""
+        note = ""
+        for key in dict.fromkeys(family_of(n) for n in nodes if family_of(n)):
+            members = family_members(self.engine, key)
+            if len(members) < 2:
+                continue
+            alphas = {float(m.result["alpha"]) for m in members}
+            args = {"p": [float(m.result["p"]) for m in members],
+                    "labels": [f"{self.engine.handle(m.id)} {m.result.get('label', m.result['test']).split(' of ')[0]}"
+                               for m in members],
+                    "method": "holm", "alpha": alphas.pop() if len(alphas) == 1 else self.cfg.data.alpha,
+                    "family": (members[0].result.get("dataset") or {}).get("name") or "the same data"}
+            try:
+                self._execute_tool(root, "stats.adjust", args, [m.id for m in members], None, "controller",
+                                   title="Holm adjustment")
+            except StepError as exc:
+                note = f"Caution: the multiple-testing adjustment could not be computed ({exc})."
+                continue
+            adj = self._last_tool_node
+            if adj is None or self.engine.resolve(adj.id).status in TERMINAL_BAD:
+                note = "Caution: the multiple-testing adjustment failed its check."
+                continue
+            h = self.engine.handle(adj.id)
+            template += "\nCorrected for multiple tests: {{%s}}" % h
+            handles.append(h)
+        return template, handles, note
 
     def _error_node(self, title: str, message: str, deps: list[str], tool: str | None = None,
                     args: dict[str, Any] | None = None) -> Node:

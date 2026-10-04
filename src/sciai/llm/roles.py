@@ -24,8 +24,13 @@ class Role:
         return text.replace("{TOOLS}", self.tool_lines())
 
 
+# Data tools the model may call. data.load (import) and stats.adjust (the family rule) are run by
+# the app itself, never chosen by the model.
+DATA_SOLVERS = ("data.describe", "data.filter", "data.derive", "data.group", "stats.ttest", "stats.mannwhitney",
+                "stats.correlation", "stats.chi2", "stats.anova", "stats.kruskal", "stats.regression")
 SOLVERS = ("sympy.", "numeric.evaluate", "numeric.quad", "numeric.root", "units.convert", "plot.",
-           "phys.evaluate", "phys.constant", "ode.dsolve", "ode.solve_ivp", "linalg.solve", "circuit.dc")
+           "phys.evaluate", "phys.constant", "ode.dsolve", "ode.solve_ivp", "linalg.solve", "circuit.dc",
+           *DATA_SOLVERS)
 
 ROLES: dict[str, Role] = {
     "formalizer": Role("formalizer", "formalize.md", SOLVERS),
@@ -34,12 +39,13 @@ ROLES: dict[str, Role] = {
     "numeric": Role("numeric", "numeric.md", ("numeric.evaluate", "numeric.quad", "numeric.root", "units.convert")),
     "physics": Role("physics", "physics.md", ("phys.", "ode.", "units.", "sympy.", "numeric.", "plot.")),
     "circuits": Role("circuits", "circuits.md", ("circuit.", "linalg.", "ode.", "plot.")),
+    "data": Role("data", "data.md", (*DATA_SOLVERS, "plot.")),
 }
 
 # After a failed check the retry goes to a specialist role for the failed tool, which
 # must pick a different method or tool (a repeated fingerprint is refused).
 RETRY_ROLE_BY_PREFIX = (("sympy.", "algebra"), ("phys.", "physics"), ("units.", "physics"), ("ode.", "physics"),
-                        ("circuit.", "circuits"), ("linalg.", "circuits"))
+                        ("circuit.", "circuits"), ("linalg.", "circuits"), ("data.", "data"), ("stats.", "data"))
 
 
 def retry_role(tool: str) -> str:

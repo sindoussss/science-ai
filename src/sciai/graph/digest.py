@@ -36,7 +36,11 @@ def _line(engine: "GraphEngine", node: Node) -> str:
     if node.type == NodeType.ASSUMPTION:
         tag = "rejected" if node.status == Status.FAILED else (
             "assumed" if node.status != Status.INVALIDATED else "invalidated")
+        if tag == "assumed" and any(f.startswith("doubtful") for f in node.flags):
+            tag = "doubtful"
         return f"{h} [{tag}] {node.content}"
+    if node.type == NodeType.ENTITY and (node.result or {}).get("kind") == "dataset":
+        return f"{h} [dataset {status}] {node.content[:MAX_RESULT_CHARS]}"
     if node.type == NodeType.ENTITY:
         return f"{h} [entity] {node.title}: {node.content[:MAX_RESULT_CHARS]}"
     text = f"{h} [{status}] {what}"

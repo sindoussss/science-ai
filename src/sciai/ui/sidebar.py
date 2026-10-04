@@ -3,6 +3,7 @@ the "Active" session list (hollow bullets, medium-weight selection, running-coun
 a collapsible knowledge base with green checks, and a settings gear pinned bottom-left."""
 from __future__ import annotations
 
+import datetime as dt
 from pathlib import Path
 
 from PyQt6.QtCore import QSize, Qt, pyqtSignal
@@ -19,7 +20,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from sciai.store.repository import Repository
+from sciai.store.repository import DatasetRecord, Repository
 from sciai.ui.chat_bar import PRODUCT_NAME
 from sciai.ui.icons import icon
 from sciai.ui.layout_util import clear_layout
@@ -30,6 +31,7 @@ from sciai.ui.theme.theme import Theme
 FILES_DIR = Path("~/.sciai/files").expanduser()
 SUBTITLE = "Local research workspace"
 ROW_H = 32
+MAX_FILES = 200
 
 
 class ListRow(QWidget):
@@ -104,6 +106,7 @@ class Sidebar(QWidget):
     settings = pyqtSignal()
     toggle_workspace = pyqtSignal()
     add_file = pyqtSignal()
+    remove_dataset = pyqtSignal(str)  # dataset name
 
     def __init__(self, repo: Repository, theme: Theme) -> None:
         super().__init__()
@@ -258,7 +261,9 @@ class Sidebar(QWidget):
         self.kb_rows = []
         for n in verified:
             value = prose_text(n.content) if n.type.value == "final" else value_text(n.display_result())
-            row = ListRow(t, "hollow", "text_faint", f"{n.title}: {value[:80]}", f"{n.title}\n{value}")
+            # an answer whose text already opens with its title ("Answer: ...") isn't prefixed twice
+            label = value if value.startswith(f"{n.title}:") else f"{n.title}: {value}"
+            row = ListRow(t, "hollow", "text_faint", label[:90], f"{n.title}\n{value}")
             row.clicked.connect(lambda s=n.session_id, i=n.id: self.open_node.emit(s, i))
             self.kb_box.addWidget(row)
             self.kb_rows.append(row)
@@ -290,14 +295,35 @@ class Sidebar(QWidget):
         self.kb_wrap.setVisible(on)
         self.kb_toggle.setIcon(icon("chevron_down" if on else "chevron_right", self.theme.hex("text_secondary")))
 
+    def files_menu_entries(self) -> tuple[list[DatasetRecord], list[Path]]:
+        """(imported datasets, newest first; other added files) as the Files menu lists them."""
+        data = self.repo.current_datasets(limit=MAX_FILES)
+        others = sorted(p for p in FILES_DIR.glob("*") if p.is_file())[:MAX_FILES] if FILES_DIR.exists() else []
+        return data, others
+
     def _show_files(self) -> None:
         m = self.files_menu
         m.clear()
-        files = sorted(FILES_DIR.glob("*"))[:200] if FILES_DIR.exists() else []
-        for p in files:
-            a = m.addAction(icon("file", self.theme.hex("text_secondary")), p.name)
+        data, others = self.files_menu_entries()
+        muted = self.theme.hex("text_secondary")
+        if data:
+            head = m.addAction("Datasets")
+            head.setEnabled(False)
+        for rec in data:
+            sub = m.addMenu(icon("file", muted), dataset_label(rec))
+            info = sub.addAction(f"Imported {_when(rec.imported_at)} · sha {rec.sha256[:12]}")
+            info.setEnabled(False)
+            sub.addSeparator()
+            sub.addAction("Remove…", lambda name=rec.name: self.remove_dataset.emit(name))
+        if others:
+            if data:
+                m.addSeparator()
+            head = m.addAction("Other files")
+            head.setEnabled(False)
+        for p in others:
+            a = m.addAction(icon("file", muted), p.name)
             a.setEnabled(False)
-        if not files:
+        if not data and not others:
             a = m.addAction("No files yet")
             a.setEnabled(False)
         m.addSeparator()
@@ -305,4 +331,12 @@ class Sidebar(QWidget):
         m.exec(self.files_btn.mapToGlobal(self.files_btn.rect().bottomLeft()))
 
 
-__all__ = ["FILES_DIR", "SUBTITLE", "ListRow", "Sidebar"]
+def dataset_label(rec: DatasetRecord) -> str:
+    return f"{rec.name}  ·  {rec.rows:,} × {rec.columns}"
+
+
+def _when(t: float) -> str:
+    return dt.datetime.fromtimestamp(t).strftime("%Y-%m-%d %H:%M")
+
+
+__all__ = ["FILES_DIR", "SUBTITLE", "ListRow", "Sidebar", "dataset_label"]

@@ -50,6 +50,10 @@ class ToolSpec:
     # An argument naming a graph node (a handle like "n5"): the controller resolves it, the result
     # depends on that node, and the node's result is passed to the tool as "data".
     node_arg: str | None = None
+    # An argument naming a dataset (a dataset node's handle, or an imported file's name): the
+    # controller resolves it to that node, the result depends on it, and the tool receives the
+    # node's dataset descriptor in place of the name. Checks receive the descriptor too.
+    dataset_arg: str | None = None
 
     def validate(self, args: dict[str, Any]) -> None:
         jsonschema.validate(args, self.schema)
@@ -65,6 +69,10 @@ class ToolSpec:
         parts = []
         for k, v in props.items():
             t = v.get("type", "any") if isinstance(v, dict) else "any"
+            if k == self.dataset_arg:
+                t = "dataset"
+            elif isinstance(t, list):
+                t = "|".join(t)
             if isinstance(v, dict) and "enum" in v:
                 t = "|".join(map(str, v["enum"]))
             parts.append(f"{k}{'' if k in req else '?'}:{t}")
@@ -104,11 +112,13 @@ def load_builtin_tools() -> None:
     _loaded = True
     from sciai.tools import (  # noqa: F401
         circuit_tools,
+        data_tools,
         linalg_tools,
         numeric_tools,
         ode_tools,
         phys_tools,
         plot_tools,
+        stats_tools,
         sympy_tools,
         units_tools,
     )

@@ -10,9 +10,10 @@ from dataclasses import dataclass
 
 from PyQt6.QtCore import QRectF, QSize, Qt
 from PyQt6.QtGui import QBrush, QFontMetricsF, QPainter, QPaintEvent, QPen
-from PyQt6.QtWidgets import QSizePolicy, QWidget
+from PyQt6.QtWidgets import QSizePolicy, QVBoxLayout, QWidget
 
 from sciai.ui.chips import chip_label, chip_size, paint_chip
+from sciai.ui.plot_image import PlotView, without_title
 from sciai.ui.theme.theme import Theme
 
 # `backticks` always become chips; node handles and dotted tool names are chipped automatically.
@@ -306,16 +307,23 @@ class TableCard(QWidget):
 
 
 class PlotCard(QWidget):
-    """A plot result drawn inline in the thread (from a plotspec: x, y, labels)."""
+    """A plot result in the thread: a rounded card with its caption, the spec drawn by matplotlib."""
+
+    HEIGHT = 280
+    CAPTION_H = 30
 
     def __init__(self, theme: Theme, spec: dict, title: str) -> None:
         super().__init__()
         self.theme, self.spec, self.title = theme, spec, title
-        self.setFixedHeight(240)
+        self.setFixedHeight(self.HEIGHT)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(8, self.CAPTION_H, 8, 8)
+        self.view = PlotView(theme, without_title(spec))  # the caption is the title
+        lay.addWidget(self.view)
 
     def sizeHint(self) -> QSize:  # noqa: N802
-        return QSize(560, 240)
+        return QSize(560, self.HEIGHT)
 
     def paintEvent(self, event: QPaintEvent) -> None:  # noqa: N802
         t = self.theme
@@ -324,40 +332,10 @@ class PlotCard(QWidget):
         p.setPen(QPen(t.c("border"), 1))
         p.setBrush(QBrush(t.c("panel")))
         p.drawRoundedRect(QRectF(0.5, 0.5, self.width() - 1, self.height() - 1), 12, 12)
-        p.setFont(t.ui_font("size_small_px"))
+        font = t.ui_font("size_small_px")
+        p.setFont(font)
         p.setPen(t.c("text_title"))
-        p.drawText(QRectF(0, 10, self.width(), 18), Qt.AlignmentFlag.AlignHCenter, self.title)
-        area = QRectF(44, 36, self.width() - 64, self.height() - 64)
-        pts = [(x, y) for x, y in zip(self.spec.get("x", []), self.spec.get("y", [])) if y is not None]
-        p.setPen(QPen(t.c("border_strong"), 1))
-        p.drawLine(area.bottomLeft(), area.bottomRight())
-        p.drawLine(area.bottomLeft(), area.topLeft())
-        if len(pts) < 2:
-            p.end()
-            return
-        xs, ys = [a for a, _ in pts], [b for _, b in pts]
-        x0, x1, y0, y1 = min(xs), max(xs), min(ys), max(ys)
-        if x1 == x0:
-            p.end()
-            return
-        if y1 == y0:
-            y0, y1 = y0 - 1, y1 + 1
-        p.setPen(t.c("text_secondary"))
-        p.drawText(QRectF(0, area.top() - 8, 40, 16), Qt.AlignmentFlag.AlignRight, f"{y1:.3g}")
-        p.drawText(QRectF(0, area.bottom() - 8, 40, 16), Qt.AlignmentFlag.AlignRight, f"{y0:.3g}")
-        p.drawText(QRectF(area.left(), area.bottom() + 4, 80, 16), Qt.AlignmentFlag.AlignLeft, f"{x0:.3g}")
-        p.drawText(QRectF(area.right() - 80, area.bottom() + 4, 80, 16), Qt.AlignmentFlag.AlignRight, f"{x1:.3g}")
-        from PyQt6.QtGui import QPainterPath
-
-        path = QPainterPath()
-        for i, (x, y) in enumerate(pts):
-            px = area.left() + (x - x0) / (x1 - x0) * area.width()
-            py = area.bottom() - (y - y0) / (y1 - y0) * area.height()
-            if i == 0:
-                path.moveTo(px, py)
-            else:
-                path.lineTo(px, py)
-        p.setPen(QPen(t.c("accent"), 1.6))
-        p.setBrush(Qt.BrushStyle.NoBrush)
-        p.drawPath(path)
+        room = self.width() - 32
+        p.drawText(QRectF(16, 0, room, self.CAPTION_H), Qt.AlignmentFlag.AlignVCenter,
+                   QFontMetricsF(font).elidedText(self.title, Qt.TextElideMode.ElideRight, room))
         p.end()

@@ -96,3 +96,40 @@ def test_physics_suite(lc, make_rt):
     assert row.assumptions == ["ideal gas", "quasi-static process", "closed system"]
     text = lc.report([row], {"model": "m", "suite": "physics"})
     assert "## Assumptions accepted automatically" in text and "ideal gas; quasi-static process" in text
+
+
+def test_data_suite(lc, make_rt, cfg, tmp_path):
+    assert [p.key for p in lc.DATA_PROBLEMS] == ["welch", "anova", "regression", "excel", "means", "repeat"]
+    assert lc.parse_args(["--model", "m", "--suite", "data"]).suite == "data"
+    assert all((lc.DATA_DIR / name).is_file() for name in lc.DATA_FILES)
+    cfg.data.data_dir = str(tmp_path / "datasets")
+    welch, anova, regression, excel, means, repeat = lc.DATA_PROBLEMS
+
+    def ask(problem, *script):
+        llm = lc.CountingLLM(ScriptedLLM(list(script)))
+        rt.controller.llm = llm
+        return lc.run_problem(rt, llm, problem)
+
+    rt = make_rt(ScriptedLLM([]))
+    assert lc.import_files(rt, lc.DATA_FILES) == \
+        "trial.csv (40 x 7), plantgrowth.tsv (30 x 2), sleep.xlsx (20 x 3)"
+
+    def goal(tool, **args):
+        return {"action": "formalize", "statement": "data question", "problem_type": "data",
+                "goal": {"tool": tool, "args": args}}
+
+    row = ask(welch, goal("stats.ttest", dataset="trial.csv", column="score", by="group"))
+    assert row.passed, row
+    assert ask(anova, goal("stats.anova", dataset="plantgrowth.tsv", column="weight", by="group")).passed
+    assert ask(regression, goal("stats.regression", dataset="trial.csv", y="response", x=["dose"])).passed
+    row = ask(excel, goal("stats.ttest", dataset="sleep.xlsx", column="extra", by="drug"))
+    assert row.passed, row
+    row = ask(means, goal("data.group", dataset="trial.csv", by="group", column="score", agg="mean"))
+    assert row.passed, row
+    row = ask(repeat)  # answered from the store: no model call
+    assert row.passed and (row.status, row.calls) == ("reused", 0), row
+
+    rt = make_rt(ScriptedLLM([]), db_path=tmp_path / "fresh.db")  # a new store, so nothing is reused
+    lc.import_files(rt, ("plantgrowth.tsv",))
+    wrong = ask(anova, goal("stats.kruskal", dataset="plantgrowth.tsv", column="weight", by="group"))
+    assert not wrong.passed and wrong.why.startswith("expected F = 4.846")

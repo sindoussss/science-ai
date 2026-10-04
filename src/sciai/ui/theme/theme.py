@@ -275,5 +275,14 @@ QFrame#popover, QFrame#pinEditor {{ background: {c['panel']}; border: 1px solid 
 QFrame#legendRow {{ background: {c['panel']}; border: none; border-top: 1px solid {c['border']}; }}
 QFrame#outputBox {{ background: {c['panel']}; border: 1px solid {c['border']}; border-radius: 8px; }}
 QToolTip {{ background: {c['panel']}; color: {c['text']}; border: 1px solid {c['border']}; padding: 4px; }}
+QLabel#dataName {{ font-size: {title}; font-weight: 600; }}
+QTableWidget#dataPreview {{ background: {c['panel']}; border: 1px solid {c['border']}; border-radius: 8px;
+    gridline-color: {c['border']}; font-family: "{mono}"; font-size: {mono_px}; color: {c['table_text']};
+    selection-background-color: {c['accent_soft']}; selection-color: {c['text']}; }}
+QTableWidget#dataPreview QHeaderView::section {{ background: {c['table_header_bg']}; color: {c['text_title']};
+    border: none; border-right: 1px solid {c['border']}; border-bottom: 1px solid {c['border']};
+    padding: 4px 8px; font-family: "{ui}"; font-size: {small}; }}
+QTableWidget#dataPreview QTableCornerButton::section {{ background: {c['table_header_bg']}; border: none;
+    border-bottom: 1px solid {c['border']}; border-right: 1px solid {c['border']}; }}
 QDialog {{ background: {c['panel']}; }}
 """

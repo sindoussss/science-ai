@@ -140,7 +140,7 @@ def test_workspace_drag_is_clamped_to_440_640_and_kept_on_resize(fault_window):
     win.workspace.show_node_tab()
     pump(app, lambda: True)
     assert min(tabs.label_gaps()) >= 12  # narrowest workspace: labels still apart and unelided
-    assert [b.text() for b in tabs.buttons] == NODE_TABS
+    assert [tabs.buttons[i].text() for i in tabs.visible_indexes()] == NODE_TABS
     sp.moveSplitter(total - 560, 1)
     pump(app, lambda: True)
     share = win.region_widths()[2] / win.width()
