@@ -40,6 +40,17 @@ def node_tooltip(node: Node, handle: str) -> str:
     return "\n".join(parts)
 
 
+
+def body_prefix(n: Node, handle: str) -> str:
+    """Faint words before a node's value: its handle, then "locked" and "flagged" when they apply.
+    Assumptions are always locked, so they don't repeat it."""
+    words = [handle]
+    if n.locked and n.type != NodeType.ASSUMPTION:
+        words.append("locked")
+    if n.warning or n.flags:
+        words.append("flagged")
+    return " · ".join(words)
+
 class NodeItem(QGraphicsItem):
     def __init__(self, node: Node, handle: str, theme: Theme,
                  on_click: Callable[["NodeItem", QPointF], None]) -> None:
@@ -111,8 +122,8 @@ class NodeItem(QGraphicsItem):
         else:
             pen = QPen(t.c("border_strong") if self.hovered else t.c("border"), 1)
             fill = t.c("panel")
-        if self.highlight:
-            pen = QPen(t.c("edge_conflict"), 1.75)
+        if self.highlight:  # a conflict: dark dashed outline, never a colored one
+            pen = QPen(t.c("selection"), 1.75, Qt.PenStyle.DashLine)
         if self.selected:
             pen = QPen(t.c("selection"), 1.75)
         p.setPen(pen)
@@ -135,19 +146,16 @@ class NodeItem(QGraphicsItem):
         p.setPen(t.c("text") if n.status != Status.INVALIDATED else t.c("text_muted"))
         p.drawText(QRectF(PAD, TITLE_Y, w - 2 * PAD, TITLE_H), Qt.AlignmentFlag.AlignVCenter, shown)
 
-        # Body row: marks + handle (faint) then the value (mono 12px) or the answer as math text.
+        # Body row: handle and state words (faint) then the value (mono 12px) or the answer as math text.
         x = float(PAD)
         inner_right = w - PAD
-        marks = ("🔒" if n.locked else "") + ("⚠" if (n.warning or n.flags) else "")
         small = t.ui_font("size_node_small_px")
-        for text, color in ((marks, "warning"), (self.handle, "text_faint")):
-            if not text:
-                continue
-            p.setFont(small)
-            p.setPen(t.c(color))
-            tw = QFontMetricsF(small).horizontalAdvance(text)
-            p.drawText(QRectF(x, BODY_Y, tw + 1, BODY_H), Qt.AlignmentFlag.AlignVCenter, text)
-            x += tw + 6
+        prefix = body_prefix(n, self.handle)
+        p.setFont(small)
+        p.setPen(t.c("text_faint"))
+        tw = QFontMetricsF(small).horizontalAdvance(prefix)
+        p.drawText(QRectF(x, BODY_Y, tw + 1, BODY_H), Qt.AlignmentFlag.AlignVCenter, prefix)
+        x += tw + 6
 
         if n.result and n.result.get("kind") == "plotspec":
             self._paint_plot(p, QRectF(PAD, BODY_Y + BODY_H + 4, w - 2 * PAD, h - BODY_Y - BODY_H - 4 - PAD))

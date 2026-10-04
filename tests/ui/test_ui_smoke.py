@@ -8,7 +8,7 @@ pytest.importorskip("pytestqt")
 from sciai.graph.model import NodeType, Status  # noqa: E402
 from sciai.ui.controller_thread import RootConfirmer  # noqa: E402
 from sciai.ui.main_window import MainWindow  # noqa: E402
-from sciai.ui.theme.theme import STATUS_ICON, Theme, load_bundled_fonts  # noqa: E402
+from sciai.ui.theme.theme import STATUSES, Theme, load_bundled_fonts  # noqa: E402
 from tests.acceptance.test_phase1 import DIFF, FORMAL, QUESTION, finish_both, subs_step  # noqa: E402
 from tests.fakes.fake_llm import ScriptedLLM  # noqa: E402
 
@@ -34,7 +34,7 @@ def test_light_theme_is_default_and_tokens_complete():
     light, dark = Theme.load("light"), Theme.load("dark")
     assert light.tokens["name"] == "light"
     assert set(light.tokens["color"]) == set(dark.tokens["color"])
-    for status in STATUS_ICON:
+    for status in STATUSES:
         assert f"status_{status}" in light.tokens["color"]
 
 

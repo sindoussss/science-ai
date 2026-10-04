@@ -47,7 +47,7 @@ class ConfirmProblemDialog(QDialog):
             lay.addWidget(cap)
             unsourced = set(inputs.get("unsourced_givens") or [])
             for name, q in givens.items():
-                row = QLabel(_given_text(name, q) + ("  ⚠ not in the question" if name in unsourced else ""))
+                row = QLabel(_given_text(name, q) + ("  (not in the question)" if name in unsourced else ""))
                 row.setObjectName("mono")
                 lay.addWidget(row)
 

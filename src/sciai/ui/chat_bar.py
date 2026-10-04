@@ -97,7 +97,7 @@ class AnswerCard(QFrame):
             self.assumptions_label.setObjectName("secondary")
             self.assumptions_label.setWordWrap(True)
             lay.addWidget(self.assumptions_label)
-        head = "✓ Verified" if verified else "● Not fully verified"
+        head = "Verified" if verified else "Not fully verified"
         extra = " · from knowledge base" if reused else ""
         self.chip_text = f"{head} · {_plural(steps, 'step')} · {_plural(calls, 'model call')}{extra}"
         self.chip = QLabel(self.chip_text)
@@ -161,12 +161,15 @@ class ThinkingGroup(QWidget):
 
     def __init__(self, theme: Theme) -> None:
         super().__init__()
+        self.theme = theme
         self.lines: list[str] = []
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(2)
         self.toggle = QToolButton()
         self.toggle.setObjectName("link")
+        self.toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.toggle.setIconSize(QSize(12, 12))
         self.toggle.setCheckable(True)
         self.toggle.toggled.connect(self._toggled)
         self.body = QLabel()
@@ -184,8 +187,9 @@ class ThinkingGroup(QWidget):
 
     def _refresh(self) -> None:
         n = len(self.lines)
-        arrow = "▾" if self.toggle.isChecked() else "▸"
-        self.toggle.setText(f"{arrow} Thinking · {_plural(n, 'step')}")
+        chevron = "chevron_down" if self.toggle.isChecked() else "chevron_right"
+        self.toggle.setIcon(icon(chevron, self.theme.hex("text_secondary")))
+        self.toggle.setText(f"Thinking · {_plural(n, 'step')}")
         self.body.setText("\n".join(f"{i + 1}. {t}" for i, t in enumerate(self.lines)))
 
     def _toggled(self, on: bool) -> None:
@@ -206,7 +210,7 @@ class Notice(QFrame):
         self.setObjectName("notice")
         lay = QHBoxLayout(self)
         lay.setContentsMargins(12, 8, 12, 8)
-        lbl = QLabel(f"⚠ {text}")
+        lbl = QLabel(text)
         lbl.setWordWrap(True)
         lbl.setStyleSheet(f"color:{theme.hex('warning')};")
         lay.addWidget(lbl)

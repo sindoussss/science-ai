@@ -117,13 +117,13 @@ class LadderStepper(QWidget):
         y = 16
         for i in range(2):
             done = i < current
-            p.setPen(QPen(t.c("accent") if done else t.c("border"), 2))
+            p.setPen(QPen(t.c("text_secondary") if done else t.c("border"), 1.5))
             p.drawLine(int(xs[i] + 12), y, int(xs[i + 1] - 12), y)
         for i, (key, label) in enumerate(LADDER):
             if i < current:
-                fill, ring, txt = t.c("accent_soft"), t.c("accent"), t.c("accent")
+                fill, ring, txt = t.c("panel"), t.c("text_secondary"), t.c("text_secondary")
             elif i == current:
-                fill, ring, txt = t.c("accent"), t.c("accent"), t.c("accent_text")
+                fill, ring, txt = t.c("text"), t.c("text"), t.c("panel")
             else:
                 fill, ring, txt = t.c("panel"), t.c("border_strong"), t.c("text_faint")
             p.setPen(QPen(ring, 1.5))
@@ -132,7 +132,7 @@ class LadderStepper(QWidget):
             p.setPen(txt)
             p.setFont(t.ui_font("size_small_px", bold=True))
             p.drawText(QRectF(xs[i] - 11, y - 11, 22, 22), Qt.AlignmentFlag.AlignCenter,
-                       "✓" if i < current else str(i + 1))
+                       str(i + 1))
             p.setPen(t.c("text") if i == current else t.c("text_muted"))
             p.setFont(t.ui_font("size_small_px", bold=i == current))
             p.drawText(QRectF(xs[i] - 60, y + 15, 120, 18), Qt.AlignmentFlag.AlignCenter, label)
@@ -150,7 +150,7 @@ class EvidenceCard(QFrame):
         title = QLabel(METHOD_LABEL.get(ev.method, ev.method.replace("_", " ").capitalize()))
         title.setStyleSheet("font-weight:600;")
         status = {"pass": "verified", "fail": "failed"}.get(ev.outcome, "inconclusive")
-        badge = QLabel({"pass": "✓ pass", "fail": "✕ fail"}.get(ev.outcome, "– inconclusive"))
+        badge = QLabel({"pass": "pass", "fail": "fail"}.get(ev.outcome, "inconclusive"))
         badge.setStyleSheet(theme.chip_css(status))
         head.addWidget(title)
         head.addStretch(1)

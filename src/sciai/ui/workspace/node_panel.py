@@ -1,6 +1,6 @@
 """Node tab of the workspace, structured like the reference's notebook cell view.
 
-Header: "[n2]" cell tag, tool chip, status chip | version stepper "‹ v2 ›", download, close.
+Header: "[n2]" cell tag, tool chip, status chip | version stepper "< v2 >", download, close.
 Sub-tabs: Code | Execution Log | Messages | Environment | Review.
 """
 from __future__ import annotations
@@ -30,7 +30,7 @@ from sciai.tools.registry import get as get_tool
 from sciai.ui.chat_bar import PRODUCT_NAME
 from sciai.ui.icons import icon
 from sciai.ui.layout_util import FlowLayout, clear_layout
-from sciai.ui.theme.theme import STATUS_ICON, Theme
+from sciai.ui.theme.theme import Theme
 from sciai.ui.workspace.code_view import CodeView
 from sciai.ui.workspace.review import ReviewPanel
 from sciai.ui.workspace.subtabs import SubTabs
@@ -335,12 +335,12 @@ class NodePanel(QWidget):
         self.tool_chip.setText(ns)
         self.tool_chip.setVisible(bool(ns))
         st = node.status.value
-        self.badge.setText(f"{STATUS_ICON.get(st, '')} {st}")
+        self.badge.setText(st)
         self.badge.setStyleSheet(t.chip_css(st))
         warn = [w for w in [node.warning, *node.flags] if w]
         if node.locked:
             warn.insert(0, "locked")
-        self.warning.setText("⚠ " + "; ".join(warn))
+        self.warning.setText("Note: " + "; ".join(warn))
         self.warning.setVisible(bool(warn))
         self.lock_btn.setText("Unlock" if node.locked else "Lock")
         self.demote_btn.setEnabled(node.status == Status.VERIFIED)
@@ -374,7 +374,7 @@ class NodePanel(QWidget):
             rows += 1
         for e in self.repo.status_history(node.id):
             frm = e["from_status"]
-            arrow = f"{frm} → {e['to_status']}" if frm else e["to_status"]
+            arrow = f"{frm} to {e['to_status']}" if frm else e["to_status"]
             self._log_row(e["created_at"], arrow, e["reason"] or "")
             rows += 1
         if not rows:
@@ -403,9 +403,9 @@ class NodePanel(QWidget):
         self.review.show_node(node, evidence)
         outcomes = {e.outcome for e in evidence}
         if "fail" in outcomes:
-            mark, color = "x_circle", t.hex("status_failed")
+            mark, color = "x_circle", t.hex("text")
         elif "pass" in outcomes:
-            mark, color = "check_circle", t.hex("status_verified")
+            mark, color = "check_circle", t.hex("text_secondary")
         else:
             mark, color = "dash_circle", t.hex("text_faint")
         self.tabs.setTabIcon(4, icon(mark, color))

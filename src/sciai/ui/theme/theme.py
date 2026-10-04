@@ -9,14 +9,8 @@ from typing import Any
 
 from PyQt6.QtGui import QColor, QFont, QFontDatabase
 
-STATUS_ICON = {
-    "verified": "✓",
-    "failed": "✕",
-    "invalidated": "⊘",
-    "proposed": "●",
-    "hypothesis": "◇",
-    "inconclusive": "–",
-}
+# Status is shown as a plain word in a neutral outlined chip: no symbols, no colored fills or borders.
+STATUSES = ("verified", "failed", "invalidated", "proposed", "hypothesis", "inconclusive")
 
 _fonts_loaded = False
 
@@ -142,10 +136,12 @@ class Theme:
         return self.c(f"status_{status}"), self.c(f"status_{status}_bg")
 
     def chip_css(self, status: str, size_key: str = "size_chip_px") -> str:
-        """Soft status chip: pale warm fill, dark text, 6px radius, 2px/8px padding (dashed for invalidated)."""
-        fg, bg = self.hex(f"status_{status}"), self.hex(f"status_{status}_bg")
-        border = f"1px dashed {fg}" if status == "invalidated" else f"1px solid {bg}"
-        return (f"color:{fg}; background:{bg}; border:{border}; border-radius:{self.radius('chip')}px;"
+        """Neutral status chip: panel fill, gray text, 1px gray outline (dashed for invalidated),
+        6px radius, 2px/8px padding."""
+        fg = self.hex(f"status_{status}")
+        border = (f"1px dashed {self.hex('border_strong')}" if status == "invalidated"
+                  else f"1px solid {self.hex('border')}")
+        return (f"color:{fg}; background:{self.hex('panel')}; border:{border}; border-radius:{self.radius('chip')}px;"
                 f"padding:2px 8px; font-weight:500; font-size:{self.css(size_key)};")
 
     # stylesheet ----------------------------------------------------------
@@ -214,7 +210,8 @@ QLabel#outputText {{ font-family: "{mono}"; font-size: {mono_px}; color: {c['tex
 QLabel#monoSecondary {{ font-family: "{mono}"; font-size: {mono_px}; color: {c['text_secondary']}; }}
 QLabel#codeChip {{ font-family: "{mono}"; font-size: {mono_px}; color: {c['chip_code_text']};
     background: {c['chip_code_bg']}; border-radius: 4px; padding: 1px 4px; }}
-QLabel#ruleChip {{ background: {c['status_proposed_bg']}; color: {c['status_proposed']}; border-radius: {r['chip']}px;
+QLabel#ruleChip {{ background: {c['panel']}; color: {c['text_title']}; border: 1px solid {c['border']};
+    border-radius: {r['chip']}px;
     padding: 2px 8px; font-weight: 500; font-size: {self.css('size_chip_px')}; }}
 QPlainTextEdit#pinText {{ border: none; background: transparent; padding: 0px; }}
 QToolButton#liveButton {{ padding-right: 20px; }}
@@ -231,8 +228,8 @@ QToolButton#composerIcon {{ border: none; background: transparent; padding: 6px;
 QToolButton#composerIcon:hover {{ background: {c['hover']}; }}
 QToolButton#subTab {{ border: none; background: transparent; padding: 0px; color: {c['text']};
     font-size: {self.css('size_tab_px')}; }}
-QToolButton#subTab:checked {{ color: {c['accent']}; }}
-QToolButton#subTab:hover {{ color: {c['accent']}; }}
+QToolButton#subTab:checked {{ color: {c['text']}; }}
+QToolButton#subTab:hover {{ color: {c['text']}; }}
 QToolButton#statusStrip:hover {{ color: {c['text']}; }}
 QMenu {{ background: {c['panel']}; border: 1px solid {c['border']}; border-radius: {r['button']}px; padding: 4px; }}
 QMenu::item {{ padding: 6px 18px; border-radius: 6px; }}
@@ -241,7 +238,7 @@ QMenu::item:selected {{ background: {c['hover']}; }}
 QLineEdit, QPlainTextEdit, QTextEdit {{ background: {c['panel']}; border: 1px solid {c['border']};
     border-radius: {r['button']}px; padding: 6px 8px; selection-background-color: {c['accent_soft']};
     selection-color: {c['text']}; }}
-QLineEdit:focus, QPlainTextEdit:focus {{ border-color: {c['accent']}; }}
+QLineEdit:focus, QPlainTextEdit:focus {{ border-color: {c['border_strong']}; }}
 QPlainTextEdit#composerInput {{ border: none; background: transparent; padding: 0px; font-size: {chat}; }}
 QPlainTextEdit#code, QPlainTextEdit#log {{ font-family: "{mono}"; font-size: {mono_px}; background: {c['code_bg']};
     border: none; border-radius: 0; padding: 6px 8px; color: {c['code_plain']}; }}
@@ -255,8 +252,8 @@ QTabWidget::pane {{ border: none; border-top: 1px solid {c['border']}; top: -1px
 QTabBar {{ background: transparent; }}
 QTabBar::tab {{ background: transparent; border: none; padding: 7px 5px; margin-right: 0px;
     color: {c['text']}; border-bottom: 2px solid transparent; }}
-QTabBar::tab:hover {{ color: {c['accent']}; }}
-QTabBar::tab:selected {{ color: {c['accent']}; border-bottom: 2px solid {c['accent']}; }}
+QTabBar::tab:hover {{ color: {c['text']}; }}
+QTabBar::tab:selected {{ color: {c['text']}; border-bottom: 2px solid {c['text']}; }}
 
 QScrollArea {{ background: transparent; border: none; }}
 QScrollArea > QWidget > QWidget {{ background: transparent; }}
@@ -272,7 +269,7 @@ QFrame#evidenceCard {{ background: {c['panel']}; border: 1px solid {c['border']}
 QFrame#bubbleUser {{ background: {c['bubble_user']}; border: none; border-radius: {r['bubble']}px; }}
 QFrame#answerCard {{ background: {c['panel']}; border: 1px solid {c['border']}; border-radius: {r['card']}px; }}
 QLabel#answerMath {{ font-size: {self.css('size_answer_px')}; font-weight: 600; }}
-QFrame#notice {{ background: {c['status_proposed_bg']}; border: none; border-radius: {r['button']}px; }}
+QFrame#notice {{ background: {c['subtle']}; border: none; border-radius: {r['button']}px; }}
 QWidget#composerCard {{ background: transparent; }}
 QFrame#popover, QFrame#pinEditor {{ background: {c['panel']}; border: 1px solid {c['border']}; border-radius: {r['card']}px; }}
 QFrame#legendRow {{ background: {c['panel']}; border: none; border-top: 1px solid {c['border']}; }}
