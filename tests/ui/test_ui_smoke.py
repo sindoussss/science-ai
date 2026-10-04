@@ -8,7 +8,7 @@ pytest.importorskip("pytestqt")
 from sciai.graph.model import NodeType, Status  # noqa: E402
 from sciai.ui.controller_thread import RootConfirmer  # noqa: E402
 from sciai.ui.main_window import MainWindow  # noqa: E402
-from sciai.ui.theme.theme import STATUS_ICON, Theme  # noqa: E402
+from sciai.ui.theme.theme import STATUS_ICON, Theme, load_bundled_fonts  # noqa: E402
 from tests.acceptance.test_phase1 import DIFF, FORMAL, QUESTION, finish_both, subs_step  # noqa: E402
 from tests.fakes.fake_llm import ScriptedLLM  # noqa: E402
 
@@ -18,7 +18,10 @@ def window(qtbot, make_rt, tmp_path):
     rt = make_rt(ScriptedLLM([FORMAL, DIFF, subs_step, finish_both]))
     theme = Theme.load("light")
     from PyQt6.QtWidgets import QApplication
-    QApplication.instance().setStyleSheet(theme.qss())
+    app = QApplication.instance()
+    app.setStyle("Fusion")
+    load_bundled_fonts()
+    app.setStyleSheet(theme.qss())
     win = MainWindow(rt, theme, RootConfirmer())
     qtbot.addWidget(win)
     win.show()
@@ -42,7 +45,7 @@ def test_task_fills_graph_and_inspector(window, qtbot, tmp_path):
     qtbot.waitUntil(lambda: not window.executor.is_busy, timeout=30000)
     finals = [n for n in window.graph.nodes.values() if n.type == NodeType.FINAL]
     assert finals[0].status == Status.VERIFIED
-    assert "-pi**2" in window.chat.transcript.toPlainText()
+    assert "-pi**2" in window.chat.transcript_text()
     assert window.inspector.node is not None
     assert window.inspector.tabs.count() == 5
     assert [window.inspector.tabs.tabText(i) for i in range(5)] == ["Code", "Log", "Chat", "Env", "Review"]
@@ -53,7 +56,7 @@ def test_task_fills_graph_and_inspector(window, qtbot, tmp_path):
     window.graph.pin_editor.open_for(diff.id, "n2", 1, 0.5, 0.5)
     window.graph.pin_editor.text.setPlainText("recheck this derivative")
     window.graph.pin_editor._send()
-    qtbot.waitUntil(lambda: "Re-check of" in window.chat.transcript.toPlainText(), timeout=30000)
+    qtbot.waitUntil(lambda: "Re-check of" in window.chat.transcript_text(), timeout=30000)
     assert window.graph.items_[diff.id].pins == [(1, 0.5, 0.5)]
     msgs = window.rt.repo.messages(window.session_id, diff.id)
     assert msgs[-1]["pin_number"] == 1
@@ -70,3 +73,14 @@ def test_locked_node_cannot_be_deleted(window, qtbot):
     from sciai.graph.engine import GraphRuleError
     with pytest.raises(GraphRuleError):
         window.rt.engine.delete(diff.id)
+
+
+def test_restyle_single_primary_and_delete_in_menu(window):
+    from PyQt6.QtWidgets import QPushButton
+    primaries = [b for b in window.findChildren(QPushButton) if b.objectName() == "primary"]
+    assert [b.text() for b in primaries] == ["Download script"]
+    assert window.inspector.delete_action.text().startswith("Delete")
+    assert not any(b.text() == "Delete" for b in window.inspector.findChildren(QPushButton))
+    from PyQt6.QtCore import Qt
+    assert window.graph.horizontalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+    assert window.graph.verticalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAlwaysOff

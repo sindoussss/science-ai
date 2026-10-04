@@ -32,7 +32,7 @@ where = ["src"]
 [tool.setuptools.package-data]
 "sciai.store" = ["schema.sql"]
 "sciai.llm" = ["prompts/*.md"]
-"sciai.ui.theme" = ["*.json"]
+"sciai.ui.theme" = ["*.json", "fonts/*"]
 "sciai" = ["../../config/default.toml"]
 
 [tool.pytest.ini_options]

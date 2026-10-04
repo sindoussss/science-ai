@@ -2,8 +2,8 @@
 from __future__ import annotations
 
 from PyQt6.QtCore import QPointF, Qt, pyqtSignal
-from PyQt6.QtGui import QPainter, QWheelEvent
-from PyQt6.QtWidgets import QGraphicsScene, QGraphicsView
+from PyQt6.QtGui import QMouseEvent, QPainter, QResizeEvent, QWheelEvent
+from PyQt6.QtWidgets import QFrame, QGraphicsScene, QGraphicsView
 
 from sciai.graph.model import EdgeKind, Node, NodeType
 from sciai.ui.canvas.edge_item import EdgeItem
@@ -23,8 +23,14 @@ class GraphView(QGraphicsView):
         self.scene_ = QGraphicsScene(self)
         self.setScene(self.scene_)
         self.setRenderHint(QPainter.RenderHint.Antialiasing)
+        self.setRenderHint(QPainter.RenderHint.TextAntialiasing)
         self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
         self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setViewportUpdateMode(QGraphicsView.ViewportUpdateMode.FullViewportUpdate)
+        self._auto_fit = True  # until the user pans or zooms
         self.nodes: dict[str, Node] = {}
         self.handles: dict[str, str] = {}
         self.edges: list[tuple[str, str, EdgeKind]] = []
@@ -43,6 +49,7 @@ class GraphView(QGraphicsView):
         self.edges = list(edges)
         self.pins = pins or {}
         self.selected = None
+        self._auto_fit = True
         self._rebuild()
         self.fit()
 
@@ -52,7 +59,10 @@ class GraphView(QGraphicsView):
         for d in depends_on:
             self.edges.append((node.id, d, EdgeKind.DEPENDS_ON))
         self._rebuild()
-        self.ensureVisible(self.items_[node.id], 60, 60)
+        if self._auto_fit:
+            self.fit()
+        else:
+            self.ensureVisible(self.items_[node.id], 60, 60)
 
     def update_node(self, node: Node) -> None:
         if node.id not in self.nodes:
@@ -107,19 +117,27 @@ class GraphView(QGraphicsView):
             aw, ah = a.size()
             bw, bh = b.size()
             if kind == EdgeKind.CHECKS:
-                e.set_ends(a.pos() + QPointF(aw / 2, 0), b.pos() + QPointF(bw / 2, bh))
+                e.set_ends(a.pos() + QPointF(aw / 2, 0), b.pos() + QPointF(bw / 2, bh), vertical=True)
             else:
                 e.set_ends(a.pos() + QPointF(0, ah / 2), b.pos() + QPointF(bw, bh / 2))
             self.scene_.addItem(e)
             self.edge_items.append((e, src, dst))
-        self.scene_.setSceneRect(self.scene_.itemsBoundingRect().adjusted(-80, -80, 80, 80))
+        self.scene_.setSceneRect(self.scene_.itemsBoundingRect().adjusted(-2000, -2000, 2000, 2000))
+
+    MAX_FIT_SCALE = 1.25
 
     def fit(self) -> None:
-        if self.items_:
-            rect = self.scene_.itemsBoundingRect().adjusted(-40, -40, 40, 40)
-            self.fitInView(rect, Qt.AspectRatioMode.KeepAspectRatio)
-            if self.transform().m11() > 1.0:
-                self.resetTransform()
+        """Fit the whole graph in the canvas (capped so a tiny graph isn't blown up)."""
+        if not self.items_:
+            return
+        rect = self.scene_.itemsBoundingRect().adjusted(-28, -28, 28, 28)
+        self.resetTransform()
+        vw, vh = self.viewport().width(), self.viewport().height()
+        if vw <= 0 or vh <= 0:
+            return
+        scale = min(vw / rect.width(), vh / rect.height(), self.MAX_FIT_SCALE)
+        self.scale(scale, scale)
+        self.centerOn(rect.center())
 
     # interaction -----------------------------------------------------------
     def _clicked(self, item: NodeItem, local: QPointF) -> None:
@@ -144,5 +162,23 @@ class GraphView(QGraphicsView):
         self.pin_sent.emit(node_id, text, number, rx, ry)
 
     def wheelEvent(self, event: QWheelEvent) -> None:  # noqa: N802
+        self._auto_fit = False
         factor = 1.15 if event.angleDelta().y() > 0 else 1 / 1.15
         self.scale(factor, factor)
+
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        if event.buttons() & Qt.MouseButton.LeftButton:
+            self._auto_fit = False  # the user is panning
+        super().mouseMoveEvent(event)
+
+    def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        if self.itemAt(event.pos()) is None:  # double-click empty canvas: fit again
+            self._auto_fit = True
+            self.fit()
+        else:
+            super().mouseDoubleClickEvent(event)
+
+    def resizeEvent(self, event: QResizeEvent) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        if self._auto_fit:
+            self.fit()

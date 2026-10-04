@@ -1,4 +1,4 @@
-"""A graph node on the canvas. Status uses color AND an icon + text label."""
+"""A graph node on the canvas. Status uses a soft chip with an icon AND a text label."""
 from __future__ import annotations
 
 from typing import Callable
@@ -10,9 +10,18 @@ from PyQt6.QtWidgets import QGraphicsItem, QGraphicsSceneMouseEvent, QStyleOptio
 from sciai.graph.model import Node, NodeType, Status
 from sciai.ui.theme.theme import STATUS_ICON, Theme
 
-W, H = 210, 78
-PLOT_H = 120
-CHECK_W, CHECK_H = 196, 30
+W, H = 168, 64
+PLOT_H = 104
+CHECK_W, CHECK_H = 168, 26
+PAD = 10
+
+
+def node_tooltip(node: Node, handle: str) -> str:
+    parts = [f"{handle} · {node.title}", node.tool_name or node.type.value, f"status: {node.status.value}"]
+    body = node.content if node.type in (NodeType.PROBLEM, NodeType.FINAL, NodeType.ERROR) else node.display_result()
+    if body:
+        parts.append(body[:400])
+    return "\n".join(parts)
 
 
 class NodeItem(QGraphicsItem):
@@ -23,10 +32,12 @@ class NodeItem(QGraphicsItem):
         self.on_click = on_click
         self.selected = False
         self.highlight = False
+        self.hovered = False
         self.pins: list[tuple[int, float, float]] = []  # (number, rel_x, rel_y)
         self.setAcceptHoverEvents(True)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setZValue(1 if node.type == NodeType.CHECK else 2)
+        self.setToolTip(node_tooltip(node, handle))
 
     # geometry ------------------------------------------------------------
     def size(self) -> tuple[float, float]:
@@ -38,88 +49,102 @@ class NodeItem(QGraphicsItem):
 
     def boundingRect(self) -> QRectF:  # noqa: N802 - Qt API
         w, h = self.size()
-        return QRectF(-2, -2, w + 4, h + 4)
+        return QRectF(-3, -3, w + 6, h + 6)
 
     def update_node(self, node: Node, handle: str) -> None:
         self.prepareGeometryChange()
         self.node, self.handle = node, handle
+        self.setToolTip(node_tooltip(node, handle))
         self.update()
 
     # painting ------------------------------------------------------------
+    def _chip(self, p: QPainter, right: float, top: float, status: str, label: str) -> float:
+        t = self.theme
+        fg, bg = t.status_colors(status)
+        p.setFont(t.ui_font("size_small_px", bold=True))
+        fm = QFontMetrics(p.font())
+        text = f"{STATUS_ICON.get(status, '')} {label}"
+        w = fm.horizontalAdvance(text) + 12
+        rect = QRectF(right - w, top, w, 18)
+        p.setBrush(QBrush(bg))
+        p.setPen(QPen(fg, 1, Qt.PenStyle.DashLine) if status == "invalidated" else Qt.PenStyle.NoPen)
+        p.drawRoundedRect(rect, 9, 9)
+        p.setPen(fg)
+        p.drawText(rect, Qt.AlignmentFlag.AlignCenter, text)
+        return w
+
     def paint(self, p: QPainter, option: QStyleOptionGraphicsItem, widget: QWidget | None = None) -> None:
         t = self.theme
         n = self.node
         w, h = self.size()
         status = n.status.value
-        fg, bg = t.status_colors(status)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        rect = QRectF(0, 0, w, h)
+        p.setRenderHint(QPainter.RenderHint.TextAntialiasing)
+        rect = QRectF(0.5, 0.5, w - 1, h - 1)
+        radius = t.radius("node")
 
-        pen = QPen(t.c("border_strong"), 1)
         if n.status == Status.INVALIDATED:
-            pen = QPen(t.c("status_invalidated"), 1.2, Qt.PenStyle.DashLine)
-        elif n.status in (Status.VERIFIED, Status.FAILED, Status.HYPOTHESIS, Status.PROPOSED):
-            pen = QPen(fg, 1.2)
+            pen = QPen(t.c("status_invalidated"), 1, Qt.PenStyle.DashLine)
+            fill = t.c("status_invalidated_bg")
+        else:
+            pen = QPen(t.c("border_strong") if self.hovered else t.c("border"), 1)
+            fill = t.c("panel")
         if self.highlight:
-            pen = QPen(t.c("edge_conflict"), 2)
+            pen = QPen(t.c("edge_conflict"), 1.75)
         if self.selected:
-            pen = QPen(t.c("selection"), 2)
+            pen = QPen(t.c("selection"), 1.75)
         p.setPen(pen)
-        p.setBrush(QBrush(t.c("panel") if n.status != Status.INVALIDATED else t.c("status_invalidated_bg")))
-        p.drawRoundedRect(rect, t.radius("node"), t.radius("node"))
-
-        # status pill: icon + label
-        label = f"{STATUS_ICON.get(status, '')} {status}"
-        if n.type == NodeType.CHECK and n.result:
-            label = f"{STATUS_ICON.get(status, '')} {n.result.get('outcome', '')}"
-        p.setFont(t.ui_font("size_small", bold=True))
-        fm = QFontMetrics(p.font())
-        pill_w = fm.horizontalAdvance(label) + 12
-        pill = QRectF(w - pill_w - 6, 6 if n.type != NodeType.CHECK else (h - 17) / 2, pill_w, 17)
-        p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(QBrush(bg))
-        p.drawRoundedRect(pill, 8, 8)
-        p.setPen(fg)
-        p.drawText(pill, Qt.AlignmentFlag.AlignCenter, label)
-
-        # title
-        p.setPen(t.c("text"))
-        p.setFont(t.ui_font(bold=True))
-        title_w = w - pill_w - 18
-        label_text = f"{self.handle}  {n.title}"
-        if n.type == NodeType.CHECK:
-            p.setFont(t.ui_font("size_small"))
-            label_text = f"{self.handle}  {n.title.split(': ', 1)[-1].replace('_', ' ')}"
-        title = QFontMetrics(p.font()).elidedText(label_text, Qt.TextElideMode.ElideRight, int(title_w))
-        top = 6 if n.type != NodeType.CHECK else (h - 18) / 2
-        p.drawText(QRectF(8, top, title_w, 18), Qt.AlignmentFlag.AlignVCenter, title)
+        p.setBrush(QBrush(fill))
+        p.drawRoundedRect(rect, radius, radius)
 
         if n.type == NodeType.CHECK:
+            outcome = (n.result or {}).get("outcome", "inconclusive")
+            chip_status = {"pass": "verified", "fail": "failed"}.get(outcome, "inconclusive")
+            cw = self._chip(p, w - 5, (h - 18) / 2, chip_status, outcome)
+            p.setFont(t.ui_font("size_small_px"))
+            p.setPen(t.c("text_muted"))
+            label = f"{self.handle}  check · {n.title.split(': ', 1)[-1].replace('_', ' ')}"
+            p.drawText(QRectF(PAD, 0, w - cw - PAD - 10, h), Qt.AlignmentFlag.AlignVCenter,
+                       QFontMetrics(p.font()).elidedText(label, Qt.TextElideMode.ElideRight, int(w - cw - PAD - 10)))
             return
-        # badges: lock / warning
-        badges = ("🔒 " if n.locked else "") + ("⚠" if n.warning or n.flags else "")
-        sub = n.tool_name or n.type.value
-        p.setFont(t.ui_font("size_small"))
-        p.setPen(t.c("text_muted"))
-        p.drawText(QRectF(8, 26, w - 16, 16), Qt.AlignmentFlag.AlignVCenter,
-                   QFontMetrics(p.font()).elidedText(f"{badges} {sub}".strip(), Qt.TextElideMode.ElideRight, w - 16))
+
+        chip_w = self._chip(p, w - 7, 7, status, status)
+
+        # title row: handle (muted) + full title, elided (tooltip has the full text)
+        p.setFont(t.ui_font("size_small_px", bold=True))
+        avail = w - chip_w - PAD - 12
+        fm = QFontMetrics(p.font())
+        handle_w = fm.horizontalAdvance(self.handle) + 5
+        p.setPen(t.c("text_faint"))
+        p.drawText(QRectF(PAD, 7, handle_w, 18), Qt.AlignmentFlag.AlignVCenter, self.handle)
+        p.setPen(t.c("text") if n.status != Status.INVALIDATED else t.c("text_muted"))
+        p.drawText(QRectF(PAD + handle_w, 7, avail - handle_w, 18), Qt.AlignmentFlag.AlignVCenter,
+                   fm.elidedText(n.title, Qt.TextElideMode.ElideRight, int(avail - handle_w)))
+
+        # second row: tool / type, plus lock and warning marks
+        marks = ("🔒 " if n.locked else "") + ("⚠ " if (n.warning or n.flags) else "")
+        p.setFont(t.ui_font("size_small_px"))
+        p.setPen(t.c("text_muted") if not marks else t.c("warning"))
+        sub = f"{marks}{n.tool_name or n.type.value}"
+        p.drawText(QRectF(PAD, 25, w - 2 * PAD, 15), Qt.AlignmentFlag.AlignVCenter,
+                   QFontMetrics(p.font()).elidedText(sub, Qt.TextElideMode.ElideRight, int(w - 2 * PAD)))
 
         if n.result and n.result.get("kind") == "plotspec":
-            self._paint_plot(p, QRectF(8, 46, w - 16, h - 54))
+            self._paint_plot(p, QRectF(PAD, 44, w - 2 * PAD, h - 52))
         else:
             text = n.content if n.type in (NodeType.PROBLEM, NodeType.FINAL, NodeType.ERROR) else n.display_result()
             p.setFont(t.mono_font())
             p.setPen(t.c("text") if n.status != Status.INVALIDATED else t.c("text_faint"))
-            p.drawText(QRectF(8, 46, w - 16, h - 50), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop,
-                       QFontMetrics(p.font()).elidedText(text, Qt.TextElideMode.ElideRight, int(w - 16)))
+            p.drawText(QRectF(PAD, 41, w - 2 * PAD, 17), Qt.AlignmentFlag.AlignVCenter,
+                       QFontMetrics(p.font()).elidedText(text, Qt.TextElideMode.ElideRight, int(w - 2 * PAD)))
 
         for num, rx, ry in self.pins:
             c = QPointF(rx * w, ry * h)
-            p.setPen(Qt.PenStyle.NoPen)
+            p.setPen(QPen(t.c("panel"), 1.5))
             p.setBrush(QBrush(t.c("pin")))
             p.drawEllipse(c, 8, 8)
             p.setPen(t.c("accent_text"))
-            p.setFont(t.ui_font("size_small", bold=True))
+            p.setFont(t.ui_font("size_small_px", bold=True))
             p.drawText(QRectF(c.x() - 8, c.y() - 8, 16, 16), Qt.AlignmentFlag.AlignCenter, str(num))
 
     def _paint_plot(self, p: QPainter, area: QRectF) -> None:
@@ -137,7 +162,10 @@ class NodeItem(QGraphicsItem):
         for i, (x, y) in enumerate(pts):
             px = area.left() + (x - x0) / (x1 - x0) * area.width()
             py = area.bottom() - (y - y0) / (y1 - y0) * area.height()
-            path.moveTo(px, py) if i == 0 else path.lineTo(px, py)
+            if i == 0:
+                path.moveTo(px, py)
+            else:
+                path.lineTo(px, py)
         p.setPen(QPen(self.theme.c("border"), 1))
         p.drawLine(area.bottomLeft(), area.bottomRight())
         p.setPen(QPen(self.theme.c("accent"), 1.5))
@@ -145,6 +173,14 @@ class NodeItem(QGraphicsItem):
         p.drawPath(path)
 
     # interaction ---------------------------------------------------------
+    def hoverEnterEvent(self, event) -> None:  # noqa: N802, ANN001
+        self.hovered = True
+        self.update()
+
+    def hoverLeaveEvent(self, event) -> None:  # noqa: N802, ANN001
+        self.hovered = False
+        self.update()
+
     def mousePressEvent(self, event: QGraphicsSceneMouseEvent) -> None:  # noqa: N802
         if event.button() == Qt.MouseButton.LeftButton:
             self.on_click(self, event.pos())

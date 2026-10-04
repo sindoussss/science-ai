@@ -3,8 +3,8 @@ from __future__ import annotations
 
 from sciai.graph.model import EdgeKind, Node, NodeType
 
-COL_W = 260
-ROW_H = 138
+COL_W = 232
+ROW_H = 112
 
 
 def layered_positions(nodes: dict[str, Node], edges: list[tuple[str, str, EdgeKind]]) -> dict[str, tuple[float, float]]:
@@ -55,5 +55,5 @@ def layered_positions(nodes: dict[str, Node], edges: list[tuple[str, str, EdgeKi
         tx, ty = pos.get(tgt, (0.0, 0.0))
         k = stacked.get(tgt, 0)
         stacked[tgt] = k + 1
-        pos[n.id] = (tx + 14, ty + 84 + 34 * k)
+        pos[n.id] = (tx, ty + 72 + 30 * k)
     return pos

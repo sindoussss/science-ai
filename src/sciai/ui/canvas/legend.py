@@ -9,16 +9,14 @@ class Legend(QWidget):
     def __init__(self, theme: Theme) -> None:
         super().__init__()
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(12, 4, 12, 4)
-        lay.setSpacing(14)
+        lay.setContentsMargins(14, 8, 14, 8)
+        lay.setSpacing(8)
         for status in ("verified", "proposed", "failed", "invalidated", "hypothesis"):
-            fg, bg = theme.hex(f"status_{status}"), theme.hex(f"status_{status}_bg")
-            border = "dashed" if status == "invalidated" else "solid"
             chip = QLabel(f"{STATUS_ICON[status]} {status}")
-            chip.setStyleSheet(f"color:{fg}; background:{bg}; border:1px {border} {fg}; border-radius:9px;"
-                               "padding:1px 8px; font-weight:600;")
+            chip.setStyleSheet(theme.chip_css(status))
             lay.addWidget(chip)
-        hint = QLabel("Click a node to inspect it; click it again to pin a note.")
-        hint.setObjectName("muted")
         lay.addStretch(1)
+        hint = QLabel("Click to inspect · click again to pin · scroll to zoom")
+        hint.setObjectName("muted")
+        hint.setStyleSheet(f"font-size:{theme.px('size_small_px')}px;")
         lay.addWidget(hint)

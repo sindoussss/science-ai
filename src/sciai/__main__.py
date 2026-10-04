@@ -12,10 +12,12 @@ def main() -> int:
     from sciai.runtime import build_runtime
     from sciai.ui.controller_thread import RootConfirmer
     from sciai.ui.main_window import MainWindow
-    from sciai.ui.theme.theme import Theme
+    from sciai.ui.theme.theme import Theme, load_bundled_fonts
 
     app = QApplication(sys.argv)
     app.setApplicationName("Science AI")
+    app.setStyle("Fusion")  # no native bevels; everything else comes from the QSS
+    load_bundled_fonts()
     theme = Theme.load(os.environ.get("SCIAI_THEME", "light"))  # light is the default
     app.setStyleSheet(theme.qss())
     cfg = load()

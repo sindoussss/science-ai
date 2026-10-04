@@ -5,7 +5,16 @@ import threading
 from typing import Any, Callable
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import QInputDialog, QMainWindow, QMessageBox, QSplitter, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import (
+    QFrame,
+    QHBoxLayout,
+    QInputDialog,
+    QMainWindow,
+    QMessageBox,
+    QSplitter,
+    QVBoxLayout,
+    QWidget,
+)
 
 from sciai.controller.loop import TaskResult
 from sciai.graph.events import Event
@@ -19,6 +28,17 @@ from sciai.ui.controller_thread import EngineExecutor, EventBridge, RootConfirme
 from sciai.ui.inspector.inspector import Hairline, Inspector
 from sciai.ui.sidebar import Sidebar
 from sciai.ui.theme.theme import Theme
+
+
+def _card(content: QWidget) -> QFrame:
+    """A floating white card: 12px radius, 1px border, no shadow (styled in theme.qss)."""
+    card = QFrame()
+    card.setObjectName("card")
+    lay = QVBoxLayout(card)
+    lay.setContentsMargins(1, 1, 1, 1)
+    lay.setSpacing(0)
+    lay.addWidget(content)
+    return card
 
 
 class MainWindow(QMainWindow):
@@ -39,7 +59,7 @@ class MainWindow(QMainWindow):
         self.chat = ChatPane(theme)
         self.inspector = Inspector(rt.repo, theme, self._env_info)
         center = QWidget()
-        center.setObjectName("canvasPane")
+        center.setObjectName("cardBody")
         cl = QVBoxLayout(center)
         cl.setContentsMargins(0, 0, 0, 0)
         cl.setSpacing(0)
@@ -48,13 +68,24 @@ class MainWindow(QMainWindow):
         cl.addWidget(Legend(theme))
         cl.addWidget(Hairline())
         cl.addWidget(self.chat)
+
+        gap = theme.space("gap")
+        root = QWidget()
+        root.setObjectName("appRoot")
+        rl = QHBoxLayout(root)
+        rl.setContentsMargins(gap, gap, gap, gap)
+        rl.setSpacing(0)
         split = QSplitter(Qt.Orientation.Horizontal)
-        split.addWidget(self.sidebar)
-        split.addWidget(center)
-        split.addWidget(self.inspector)
-        split.setSizes([240, 840, 380])
+        split.setHandleWidth(gap)
         split.setChildrenCollapsible(False)
-        self.setCentralWidget(split)
+        for pane, min_w in ((self.sidebar, 200), (center, 480), (self.inspector, 340)):
+            card = _card(pane)
+            card.setMinimumWidth(min_w)
+            split.addWidget(card)
+        split.setSizes([236, 800, 380])
+        split.setStretchFactor(1, 1)
+        rl.addWidget(split)
+        self.setCentralWidget(root)
 
         self.executor.done.connect(self._job_done)
         self.executor.busy.connect(self.chat.set_busy)
@@ -80,8 +111,8 @@ class MainWindow(QMainWindow):
         else:
             self._new_session()
         if rt.flagged_on_start:
-            self.chat.add("system", f"{rt.flagged_on_start} unverified result(s) from earlier sessions are flagged "
-                                    "for re-check and will not be reused silently.", muted=True)
+            self.chat.add_notice(f"{rt.flagged_on_start} unverified result(s) from earlier sessions are flagged "
+                                 "for re-check and will not be reused silently.")
         threading.Thread(target=self._poll_env, daemon=True).start()
 
     # ---------------------------------------------------------------- jobs
@@ -95,7 +126,7 @@ class MainWindow(QMainWindow):
         if cb is not None:
             cb(result, error)
         elif error is not None:
-            self.chat.add("error", str(error))
+            self.chat.add_notice(str(error))
 
     def _engine_job(self, fn: Callable[[], Any], node_id: str | None = None) -> None:
         def done(_r: Any, err: Exception | None) -> None:
@@ -131,9 +162,14 @@ class MainWindow(QMainWindow):
         self.graph.load(nodes, edges, pins)
         self.chat.clear()
         for m in self.rt.repo.messages(sid):
-            self.chat.add("You" if m["author"] == "user" else "Claude", m["text"], muted=m["author"] == "system")
+            if m["author"] == "user":
+                self.chat.add_user(m["text"])
+            elif m["author"] == "system":
+                self.chat.add_meta(m["text"])
+            else:
+                self.chat.add_assistant(m["text"])
         for notice in self.rt.repo.notices(sid):
-            self.chat.add("notice", notice["text"], muted=False)
+            self.chat.add_notice(notice["text"])
         self.rt.repo.mark_notices_seen(sid)
         self.sidebar.refresh(sid)
         self.inspector.show_node(None, self.graph.handles)
@@ -144,9 +180,9 @@ class MainWindow(QMainWindow):
     def _submit(self, text: str) -> None:
         if self.executor.is_busy:
             self.rt.controller.steer(text)
-            self.chat.add("You (steer)", text)
+            self.chat.add_user(text, label="(steer)")
             return
-        self.chat.add("You", text)
+        self.chat.add_user(text)
         sid = self.session_id
         sessions = {r["id"]: r["title"] for r in self.rt.repo.list_sessions()}
         if sid and sessions.get(sid) == "New session":
@@ -156,23 +192,24 @@ class MainWindow(QMainWindow):
 
     def _task_done(self, result: TaskResult | None, err: Exception | None) -> None:
         if err is not None:
-            self.chat.add("error", str(err))
+            self.chat.add_notice(str(err))
             return
         assert result is not None
+        caption = f"{result.llm_calls} model call(s) · {result.steps} step(s)"
         if result.status in ("answered", "reused"):
             tag = "" if result.verified else " (not fully verified)"
             reuse = " Reused from the knowledge base." if result.status == "reused" else ""
-            self.chat.add("Claude", f"{result.answer}{tag}{reuse}")
+            self.chat.add_assistant(f"{result.answer}{tag}{reuse}", caption)
             if result.final_node:
                 self._select_and_show(result.final_node)
         elif result.status == "needs_user":
-            self.chat.add("Claude", result.question or "")
+            self.chat.add_assistant(result.question or "", caption)
         elif result.status == "escalated":
-            self.chat.add("Claude", f"{result.detail} The conflicting results are outlined in red on the graph.")
+            self.chat.add_assistant(f"{result.detail} The conflicting results are outlined in red on the graph.",
+                                    caption)
             self.graph.highlight(result.conflict)
         else:
-            self.chat.add("Claude", f"[{result.status}] {result.detail}", muted=True)
-        self.chat.add("system", f"{result.llm_calls} model call(s), {result.steps} step(s)", muted=True)
+            self.chat.add_assistant(f"Stopped ({result.status}). {result.detail}", caption)
         self.sidebar.refresh(self.session_id)
 
     def _node_note(self, node_id: str, text: str) -> None:
@@ -184,11 +221,14 @@ class MainWindow(QMainWindow):
         self.rt.repo.add_message(self.session_id or "", "user", text, node_id=node_id, pin_number=number,
                                  pin_xy=(rx, ry), sent=True)
         handle = self.graph.handles.get(node_id, "")
-        self.chat.add("You", f"(note {number} on {handle}) {text}")
+        self.chat.add_user(text, label=f"(note {number} on {handle})")
         self.rt.controller.steer(f"Pinned note {number} on {handle}: {text}")
 
         def done(msg: Any, err: Exception | None) -> None:
-            self.chat.add("Claude", str(err) if err else str(msg))
+            if err:
+                self.chat.add_notice(str(err))
+            else:
+                self.chat.add_assistant(str(msg))
             self._show(node_id)
         self._submit_job(lambda: self.rt.controller.recheck(node_id, text), done)
 
@@ -217,12 +257,12 @@ class MainWindow(QMainWindow):
         elif ev.kind == "cascade":
             self._cascade_notice(p["report"])
         elif ev.kind == "thought":
-            self.chat.add("thinking", p["text"], muted=True)
+            self.chat.add_thought(p["text"])
 
     def _cascade_notice(self, report: CascadeReport) -> None:
         if report.locked_warnings:
-            self.chat.add("warning", f"{len(report.locked_warnings)} locked node(s) were invalidated; they stay "
-                                     "in the graph with a warning.")
+            self.chat.add_notice(f"{len(report.locked_warnings)} locked node(s) were invalidated; they stay "
+                                 "in the graph with a warning.")
         if not report.crosses_sessions:
             return
         titles = {r["id"]: r["title"] for r in self.rt.repo.list_sessions()}
@@ -230,7 +270,7 @@ class MainWindow(QMainWindow):
         for sid, answers in report.affected_sessions.items():
             what = f"{len(answers)} answer(s)" if answers else "intermediate results"
             parts.append(f"“{titles.get(sid, sid[:8])}” ({what})")
-        self.chat.add("notice", "This invalidation also affects other sessions: " + ", ".join(parts) + ".")
+        self.chat.add_notice("This invalidation also affects other sessions: " + ", ".join(parts) + ".")
 
     # ----------------------------------------------------------- selection
     def _select(self, node_id: str) -> None:

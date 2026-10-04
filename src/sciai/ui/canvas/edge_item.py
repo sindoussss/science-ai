@@ -1,38 +1,60 @@
+"""Edges: thin bezier stroke plus a small filled arrowhead (stroke is never filled)."""
 from __future__ import annotations
 
 import math
 
-from PyQt6.QtCore import QLineF, QPointF, Qt
-from PyQt6.QtGui import QBrush, QPainterPath, QPen, QPolygonF
-from PyQt6.QtWidgets import QGraphicsPathItem
+from PyQt6.QtCore import QPointF, QRectF, Qt
+from PyQt6.QtGui import QBrush, QPainter, QPainterPath, QPen, QPolygonF
+from PyQt6.QtWidgets import QGraphicsItem, QStyleOptionGraphicsItem, QWidget
 
 from sciai.graph.model import EdgeKind
 from sciai.ui.theme.theme import Theme
 
+ARROW = 6.0
 
-class EdgeItem(QGraphicsPathItem):
+
+class EdgeItem(QGraphicsItem):
     """Arrow from a node to what it depends on (src -> dst)."""
 
     def __init__(self, kind: EdgeKind, theme: Theme) -> None:
         super().__init__()
         self.kind = kind
-        self.theme = theme
         color = {EdgeKind.CHECKS: "edge_check", EdgeKind.CONFLICTS_WITH: "edge_conflict"}.get(kind, "edge")
         style = {EdgeKind.CHECKS: Qt.PenStyle.DotLine, EdgeKind.CONFLICTS_WITH: Qt.PenStyle.DashLine}.get(
             kind, Qt.PenStyle.SolidLine)
-        width = 2.0 if kind == EdgeKind.CONFLICTS_WITH else 1.2
-        self.setPen(QPen(theme.c(color), width, style))
-        self.setBrush(QBrush(theme.c(color)))
+        self.color = theme.c(color)
+        self.pen = QPen(self.color, 1.5 if kind == EdgeKind.CONFLICTS_WITH else 1.25, style)
+        self.pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        self.path = QPainterPath()
+        self.head = QPolygonF()
         self.setZValue(0)
 
-    def set_ends(self, a: QPointF, b: QPointF) -> None:
+    def set_ends(self, a: QPointF, b: QPointF, vertical: bool = False) -> None:
+        self.prepareGeometryChange()
         path = QPainterPath(a)
-        dx = (b.x() - a.x()) * 0.5
-        path.cubicTo(QPointF(a.x() + dx, a.y()), QPointF(b.x() - dx, b.y()), b)
-        line = QLineF(path.pointAtPercent(0.97), b)
-        ang = math.atan2(line.dy(), line.dx())
-        size = 7
-        p1 = b - QPointF(math.cos(ang - 0.4) * size, math.sin(ang - 0.4) * size)
-        p2 = b - QPointF(math.cos(ang + 0.4) * size, math.sin(ang + 0.4) * size)
-        path.addPolygon(QPolygonF([b, p1, p2, b]))
-        self.setPath(path)
+        if vertical:
+            dy = max(12.0, abs(b.y() - a.y()) * 0.5)
+            c1, c2 = QPointF(a.x(), a.y() - dy), QPointF(b.x(), b.y() + dy)
+        else:
+            dx = max(24.0, abs(b.x() - a.x()) * 0.45)
+            c1, c2 = QPointF(a.x() - dx, a.y()), QPointF(b.x() + dx, b.y())
+        # stop the stroke at the arrow's base so the tip stays crisp
+        ang = math.atan2(b.y() - c2.y(), b.x() - c2.x())
+        base = QPointF(b.x() - math.cos(ang) * ARROW, b.y() - math.sin(ang) * ARROW)
+        path.cubicTo(c1, c2, base)
+        self.path = path
+        left = QPointF(b.x() - math.cos(ang - 0.45) * ARROW, b.y() - math.sin(ang - 0.45) * ARROW)
+        right = QPointF(b.x() - math.cos(ang + 0.45) * ARROW, b.y() - math.sin(ang + 0.45) * ARROW)
+        self.head = QPolygonF([b, left, right])
+
+    def boundingRect(self) -> QRectF:  # noqa: N802
+        return self.path.boundingRect().united(self.head.boundingRect()).adjusted(-4, -4, 4, 4)
+
+    def paint(self, p: QPainter, option: QStyleOptionGraphicsItem, widget: QWidget | None = None) -> None:
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setPen(self.pen)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawPath(self.path)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QBrush(self.color))
+        p.drawPolygon(self.head)

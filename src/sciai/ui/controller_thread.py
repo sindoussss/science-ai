@@ -12,7 +12,7 @@ import queue
 import threading
 from typing import Any, Callable
 
-from PyQt6.QtCore import QObject, pyqtSignal
+from PyQt6.QtCore import QObject, Qt, pyqtSignal
 
 from sciai.graph.events import Event, EventBus
 from sciai.graph.model import Node
@@ -37,10 +37,16 @@ class EventBridge(QObject):
 
 
 class EngineExecutor(QObject):
-    """Single worker thread. ``submit`` returns a job id; ``done`` reports (id, result, error)."""
+    """Single worker thread. ``submit`` returns a job id; ``done`` reports (id, result, error).
+
+    The executor lives on the UI thread. The worker only posts ``_finished``; the
+    pending count drops in ``_on_finished`` on the UI thread, right after ``done``
+    is delivered, so ``is_busy`` never reads False while a result is still queued.
+    """
 
     done = pyqtSignal(int, object, object)
     busy = pyqtSignal(bool)
+    _finished = pyqtSignal(int, object, object)
 
     def __init__(self) -> None:
         super().__init__()
@@ -48,6 +54,7 @@ class EngineExecutor(QObject):
         self._ids = itertools.count(1)
         self._pending = 0
         self._lock = threading.Lock()
+        self._finished.connect(self._on_finished, Qt.ConnectionType.QueuedConnection)
         self._thread = threading.Thread(target=self._loop, name="sciai-engine", daemon=True)
         self._thread.start()
 
@@ -70,11 +77,17 @@ class EngineExecutor(QObject):
                 result, error = fn(), None
             except Exception as exc:  # noqa: BLE001 - reported to the UI
                 result, error = None, exc
+            self._finished.emit(job, result, error)
+
+    def _on_finished(self, job: int, result: Any, error: Any) -> None:
+        try:
             self.done.emit(job, result, error)
+        finally:
             with self._lock:
                 self._pending -= 1
-                if self._pending == 0:
-                    self.busy.emit(False)
+                idle = self._pending == 0
+            if idle:
+                self.busy.emit(False)
 
     @property
     def is_busy(self) -> bool:

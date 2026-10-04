@@ -12,7 +12,7 @@ class PinEditor(QFrame):
     def __init__(self, parent: QWidget) -> None:
         super().__init__(parent)
         self.setObjectName("pinEditor")
-        self.setFrameShape(QFrame.Shape.StyledPanel)
+        self.setFrameShape(QFrame.Shape.NoFrame)
         self.setFixedWidth(260)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(8, 8, 8, 8)
@@ -23,7 +23,6 @@ class PinEditor(QFrame):
         row = QHBoxLayout()
         cancel = QPushButton("Cancel")
         send = QPushButton("Send")
-        send.setObjectName("primary")
         row.addStretch(1)
         row.addWidget(cancel)
         row.addWidget(send)
