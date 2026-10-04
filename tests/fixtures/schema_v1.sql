@@ -1,5 +1,4 @@
--- Science AI knowledge store, schema version 2 (v2 adds the 'assumption' node type).
--- A v1 store is migrated on open by sciai.store.migrate.
+-- Science AI knowledge store, schema version 1.
 -- The database is global across sessions: cascades cross session boundaries.
 
 CREATE TABLE IF NOT EXISTS meta (
@@ -21,8 +20,7 @@ CREATE TABLE IF NOT EXISTS nodes (
     session_id        TEXT NOT NULL REFERENCES sessions(id),
     layer             TEXT NOT NULL CHECK (layer IN ('reasoning','domain','plot')),
     type              TEXT NOT NULL CHECK (type IN ('problem','claim','step','tool_result','check',
-                                                    'final','error','hint','entity','plot',
-                                                    'assumption')),
+                                                    'final','error','hint','entity','plot')),
     domain            TEXT NOT NULL CHECK (domain IN ('general','math','physics','data','chem')),
     title             TEXT NOT NULL,
     content           TEXT NOT NULL DEFAULT '',

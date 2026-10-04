@@ -43,6 +43,7 @@ class NodeType(StrEnum):
     HINT = "hint"
     ENTITY = "entity"
     PLOT = "plot"
+    ASSUMPTION = "assumption"  # a modelling assumption; never verified, confirmed by the user
 
 
 class EdgeKind(StrEnum):
