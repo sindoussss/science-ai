@@ -19,6 +19,7 @@ class ModelConfig:
     temperature: float = 0.0
     keep_alive: str = "30m"
     request_timeout: float = 240
+    think: bool = False  # reasoning ("thinking") mode for models that have one; off by default
 
 
 @dataclass
@@ -63,6 +64,10 @@ def _apply(section: Any, values: dict[str, Any]) -> None:
     for key, value in values.items():
         if key not in known:
             raise ValueError(f"unknown config key {type(section).__name__}.{key}")
+        default = getattr(type(section)(), key)
+        # a quoted "false" is a non-empty string and would read as True; only real booleans pass
+        if isinstance(default, bool) and not isinstance(value, bool):
+            raise ValueError(f"{type(section).__name__}.{key} must be true or false, got {value!r}")
         setattr(section, key, value)
 
 
@@ -71,7 +76,7 @@ def load(paths: list[Path] | None = None) -> Config:
     for path in paths if paths is not None else [DEFAULT_FILE, USER_FILE]:
         if not path.exists():
             continue
-        data = tomllib.loads(path.read_text(encoding="utf-8"))
+        data = tomllib.loads(path.read_text(encoding="utf-8-sig"))  # Notepad may add a BOM
         for name, values in data.items():
             if not hasattr(cfg, name):
                 raise ValueError(f"unknown config section [{name}] in {path}")

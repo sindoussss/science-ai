@@ -63,8 +63,30 @@ class Action:
         return self.data.get(key, default)
 
 
+_THINK = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
+
+
+def strip_think(text: str) -> str:
+    """Remove reasoning a thinking model wrote into its reply, so it is never parsed as the action.
+
+    Handles a complete <think>...</think> block, a block cut off by the token limit (no closing
+    tag: everything after <think> is reasoning), and a reply whose opening tag was part of the
+    prompt template (only </think>: everything before it is reasoning)."""
+    text = _THINK.sub("", text)
+    lower = text.lower()
+    if "</think>" in lower:
+        text = text[lower.rfind("</think>") + len("</think>"):]
+        lower = text.lower()
+    if "<think>" in lower:
+        text = text[: lower.find("<think>")]
+    return text
+
+
 def _extract_json(text: str) -> Any:
-    text = text.strip()
+    raw = text
+    text = strip_think(text).strip()
+    if not text and "<think>" in raw.lower():
+        raise ActionError("reply was cut off while thinking; reply with exactly one JSON object and no reasoning")
     if text.startswith("```"):
         text = re.sub(r"^```[a-zA-Z]*\n?|```$", "", text).strip()
     try:

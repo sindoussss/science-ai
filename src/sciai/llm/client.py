@@ -14,6 +14,11 @@ LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
 CHARS_PER_TOKEN = 3.0  # conservative for English + math; real tokenizers average ~3.5-4
 
 
+def full_tag(name: str) -> str:
+    """Ollama names a model without a tag "<name>:latest" (in /api/ps too), so compare full tags."""
+    return name if ":" in name.rsplit("/", 1)[-1] else f"{name}:latest"
+
+
 def estimate_tokens(text: str) -> int:
     return int(len(text) / CHARS_PER_TOKEN) + 1
 
@@ -57,6 +62,9 @@ class OllamaClient:
             "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
             "stream": False,
             "format": schema,
+            # Explicit, because thinking models (qwen3, deepseek-r1) think by default when it is left
+            # out. false is accepted by every model; true is refused by models that can't think.
+            "think": bool(self.cfg.think),
             "keep_alive": self.cfg.keep_alive,
             "options": {
                 "num_ctx": self.cfg.num_ctx,
@@ -82,8 +90,9 @@ class OllamaClient:
             ps = self._http.get("/api/ps", timeout=3).json()
         except (httpx.HTTPError, json.JSONDecodeError):
             return {"reachable": False, "model": self.cfg.name}
+        want = full_tag(self.cfg.name)
         for m in ps.get("models", []):
-            if m.get("name") == self.cfg.name or m.get("model") == self.cfg.name:
+            if full_tag(m.get("name") or "") == want or full_tag(m.get("model") or "") == want:
                 return {"reachable": True, "model": self.cfg.name, "loaded": True,
                         "vram_bytes": m.get("size_vram"), "size_bytes": m.get("size")}
         return {"reachable": True, "model": self.cfg.name, "loaded": False}

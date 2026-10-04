@@ -12,6 +12,10 @@ num_predict = 384          # max tokens per reply; actions are short JSON
 temperature = 0.0
 keep_alive = "30m"
 request_timeout = 240
+# Reasoning mode for models that have one (qwen3, deepseek-r1, ...). Off: actions are short JSON and
+# thinking tokens count against num_predict. If you turn it on, raise num_predict (e.g. 2048).
+# Any <think>...</think> text a model still writes into its reply is removed before parsing.
+think = false
 
 [controller]
 max_steps = 14
