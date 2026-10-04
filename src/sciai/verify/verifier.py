@@ -30,12 +30,16 @@ class VerifyOutcome:
 
 
 class Verifier:
-    def __init__(self, engine: GraphEngine, runner: Runner) -> None:
+    def __init__(self, engine: GraphEngine, runner: Runner, plausibility: bool = True) -> None:
         self.engine = engine
         self.runner = runner
+        self.plausibility = plausibility
 
     def offered(self, node: Node) -> list[tuple[CheckPlan, dict[str, Any]]]:
-        return plans_for(node.tool_name, node.tool_inputs, node.result)
+        plans = plans_for(node.tool_name, node.tool_inputs, node.result)
+        if not self.plausibility:
+            plans = [(p, a) for p, a in plans if p.method != "plausibility"]
+        return plans
 
     def run_plan(self, node: Node, plan: CheckPlan, args: dict[str, Any]) -> CheckRun:
         outcome = self.runner.run(plan.checker, args)
@@ -61,28 +65,42 @@ class Verifier:
         return CheckRun(plan, verdict, result, check)
 
     def verify(self, node: Node, only_method: str | None = None) -> VerifyOutcome:
-        """Run offered checks cheapest-first until one passes or fails."""
+        """Run every required check, then optional ones cheapest-first until one passes.
+
+        Any fail fails the node. It is verified when every ``must_pass`` check passed,
+        at least one check passed, and, if optional checks were offered, one of them
+        passed: a required check such as units can't confirm the value on its own."""
         node = self.engine.resolve(node.id)
         if node.status in TERMINAL_BAD:
             return VerifyOutcome("unavailable")
-        plans = [(p, a) for p, a in self.offered(node) if only_method in (None, p.method, p.checker)]
-        if not plans:
+        plans = self.offered(node)
+        required = [(p, a) for p, a in plans if p.required]
+        optional = [(p, a) for p, a in plans if not p.required and only_method in (None, p.method, p.checker)]
+        if only_method is not None and not optional and not any(
+                only_method in (p.method, p.checker) for p, _ in required):
+            return VerifyOutcome("unavailable")
+        if not required and not optional:
             return VerifyOutcome("unavailable")
         out = VerifyOutcome("inconclusive")
-        for plan, args in plans:
+        blocked = optional_passed = False
+        for plan, args in required + optional:
             run = self.run_plan(node, plan, args)
             out.runs.append(run)
-            if run.outcome == "pass":
-                if node.status == Status.HYPOTHESIS:
-                    out.status = "verified"  # evidence recorded; chem stays a hypothesis
-                else:
-                    self.engine.set_status(node.id, Status.VERIFIED, f"{plan.method} check passed",
-                                           run.check_node.id if run.check_node else None)
-                    out.status = "verified"
-                return out
             if run.outcome == "fail":
                 self.engine.set_status(node.id, Status.FAILED, f"{plan.method} check failed",
                                        run.check_node.id if run.check_node else None)
                 out.status = "failed"
                 return out
+            if run.outcome != "pass":
+                blocked = blocked or plan.must_pass
+            elif not plan.required:
+                optional_passed = True
+                break  # one optional pass is enough
+        passes = [r for r in out.runs if r.outcome == "pass"]
+        if passes and not blocked and (optional_passed or not optional):
+            last = passes[-1]
+            if node.status != Status.HYPOTHESIS:  # chem keeps its evidence but stays a hypothesis
+                self.engine.set_status(node.id, Status.VERIFIED, f"{last.plan.method} check passed",
+                                       last.check_node.id if last.check_node else None)
+            out.status = "verified"
         return out
