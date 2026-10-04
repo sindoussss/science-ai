@@ -37,14 +37,38 @@
     "pin": "#5B8DEF",
     "canvas_dot": "#1F2937",
     "shadow": "#33000000",
-    "text_secondary": "#9CA3AF"
+    "text_secondary": "#9CA3AF",
+    "text_title": "#4C4C49",
+    "chip_code_bg": "#ECEFF0",
+    "chip_code_text": "#3C4B60",
+    "table_header_bg": "#E1E1DF",
+    "table_text": "#636361",
+    "status_strip_bg": "#ECEDEA",
+    "status_strip_text": "#454543",
+    "send": "#C5623F",
+    "send_hover": "#B0563A",
+    "send_text": "#FFFFFF",
+    "popover_head": "#858583",
+    "pill_dark": "#0C0C0C",
+    "pill_dark_text": "#FFFFFF",
+    "live": "#607D18",
+    "code_bg": "#F3F3F3",
+    "code_gutter": "#F3F3F3",
+    "code_line_no": "#8F8F8E",
+    "code_plain": "#333333",
+    "code_kw": "#3A4B61",
+    "code_str": "#475332",
+    "code_fn": "#435067",
+    "code_comment": "#8D8D8C"
   },
   "radius": {
     "card": 12,
     "node": 10,
     "chip": 10,
     "button": 8,
-    "bubble": 12
+    "bubble": 12,
+    "composer": 16,
+    "pill": 14
   },
   "font": {
     "ui": [
@@ -63,8 +87,8 @@
     ],
     "size_ui_px": 14,
     "size_small_px": 12.5,
-    "size_title_px": 16,
-    "size_brand_px": 22,
+    "size_title_px": 15,
+    "size_brand_px": 24,
     "size_mono_px": 12.5,
     "serif": [
       "Source Serif 4",
@@ -73,12 +97,14 @@
       "Times New Roman",
       "serif"
     ],
-    "size_caption_px": 11,
+    "size_caption_px": 11.5,
     "size_node_title_px": 13,
     "size_node_body_px": 12,
     "size_node_small_px": 11.5,
     "size_answer_px": 20,
-    "size_legend_px": 12
+    "size_legend_px": 12,
+    "size_chat_px": 15,
+    "chat_line_height": 1.6
   },
   "space": {
     "gap": 12,
@@ -88,6 +114,6 @@
   },
   "_note": "Placeholder until the light theme is signed off; values are a first pass.",
   "effects": {
-    "card_shadow": true
+    "card_shadow": false
   }
 }

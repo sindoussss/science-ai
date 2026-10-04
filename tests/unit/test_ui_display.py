@@ -32,17 +32,22 @@ def test_answer_text_falls_back_when_a_value_is_missing():
     assert answer_text(final, lambda h: None) == prose_text("f'(pi) = -pi**2.") == "f'(π) = −π²."
 
 
-def test_layout_grid_and_check_pills_do_not_overlap():
-    a, b, c = _n("a"), _n("b"), _n("c")
+def test_layout_is_top_to_bottom_and_check_pills_do_not_overlap():
+    a, b, c, d = _n("a"), _n("b"), _n("c"), _n("d")
     checks = [_n(f"check: m{i}", NodeType.CHECK) for i in range(3)]
-    nodes = {n.id: n for n in (a, b, c, *checks)}
-    edges = [(b.id, a.id, EdgeKind.DEPENDS_ON), (c.id, a.id, EdgeKind.DEPENDS_ON)]
+    nodes = {n.id: n for n in (a, b, c, d, *checks)}
+    edges = [(b.id, a.id, EdgeKind.DEPENDS_ON), (c.id, a.id, EdgeKind.DEPENDS_ON),
+             (d.id, b.id, EdgeKind.DEPENDS_ON)]
     edges += [(k.id, b.id, EdgeKind.CHECKS) for k in checks]
     pos = layered_positions(nodes, edges)
-    assert pos[b.id][0] - pos[a.id][0] == NODE_W + COL_GAP
+    # siblings side by side on one row, centered under their parent
+    assert pos[b.id][1] == pos[c.id][1] == NODE_H + ROW_GAP
+    assert pos[c.id][0] - pos[b.id][0] == NODE_W + COL_GAP
+    assert (pos[b.id][0] + pos[c.id][0]) / 2 == pos[a.id][0]
     # b carries three pills, so the next row starts below them plus the row gap
     last_pill_bottom = max(pos[k.id][1] for k in checks) + PILL_H
-    assert pos[c.id][1] == last_pill_bottom + ROW_GAP
+    assert pos[d.id][1] == last_pill_bottom + ROW_GAP
+    assert pos[d.id][0] == pos[b.id][0]
     tops = sorted(pos[k.id][1] for k in checks)
     assert tops[0] >= pos[b.id][1] + NODE_H
     assert all(t2 - t1 >= PILL_H for t1, t2 in zip(tops, tops[1:]))

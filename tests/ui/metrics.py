@@ -67,34 +67,44 @@ def pump(app: QApplication, cond: Callable[[], bool], timeout: float = 30.0) -> 
 
 
 def run_fault_window(rt, size: tuple[int, int]) -> MainWindow:  # noqa: ANN001
-    """Open the window at ``size``, run the injected-fault task, select the failed derivative."""
+    """Open the window at ``size``, run the injected-fault task and select the failed derivative
+    (the node pill appears; the workspace stays on the Graph tab)."""
     app = setup_app()
     win = MainWindow(rt, Theme.load("light"), RootConfirmer())
     win.resize(*size)
     win.show()
     pump(app, lambda: win.session_id is not None)
-    win.chat.input.setText(QUESTION)
+    win.chat.input.setPlainText(QUESTION)
     win.chat._submit()
     pump(app, lambda: not win.executor.is_busy
          and any(n.type == NodeType.FINAL for n in win.graph.nodes.values()))
-    bad = next(n for n in win.graph.nodes.values()
-               if n.tool_name == "sympy.diff" and n.status.value == "failed")
+    bad = failed_diff(win)
     win._select_and_show(bad.id)
-    win.inspector.tabs.setCurrentIndex(4)  # Review
     pump(app, lambda: True)
     return win
+
+
+def failed_diff(win: MainWindow):  # noqa: ANN201
+    return next(n for n in win.graph.nodes.values() if n.tool_name == "sympy.diff" and n.status.value == "failed")
+
+
+NODE_TABS = ["Code", "Execution Log", "Messages", "Environment", "Review"]
 
 
 @dataclass
 class Metrics:
     window: str
+    chat_w: int
+    sidebar_w: int
+    workspace_w: int
+    chat_widest: bool
     scale: float
     title_px: float
-    canvas_frac: float
-    chat_frac: float
-    sidebar_w: int
-    inspector_w: int
     nodes_visible: int
+    composer: list[str]
+    pills: list[str]
+    node_tabs: list[str]
+    live: str
     clipped: list[str] = field(default_factory=list)
     titles_not_full: list[str] = field(default_factory=list)
 
@@ -157,24 +167,81 @@ def clipped_text(root: QWidget) -> list[str]:
     return out
 
 
+def open_pin_editor(win: MainWindow) -> None:
+    """Click the selected node again (as a user would) to drop pin 1 near its right edge."""
+    from PyQt6.QtCore import QPointF
+
+    g = win.graph
+    item = g.items_[g.selected]
+    w, h = item.size()
+    g._clicked(item, QPointF(w * 0.8, h * 0.5))
+
+
+def composer_parts(win: MainWindow) -> list[str]:
+    """Which of the reference composer's parts are present and visible."""
+    c = win.chat.composer
+    parts = {"status strip": c.status_strip, "+": c.attach_btn, "tools": c.tools_btn, "mic": c.mic_btn,
+             "send": c.send_btn, "input": c.input}
+    found = [name for name, w in parts.items() if w.isVisible() and w.width() > 0 and w.height() > 0]
+    if c.input.placeholderText() != "Ask anything":
+        found.remove("input")
+    return found
+
+
+def visible_clipping(win: MainWindow) -> list[str]:
+    from sciai.ui.chat.inline import TableCard
+
+    out = clipped_text(win)
+    for card in win.findChildren(TableCard):
+        if card.isVisible():
+            out += card.elided()
+    return out
+
+
 def measure(win: MainWindow) -> Metrics:
+    """Measure the Graph tab, then the node's Code and Review tabs; clipping is checked in all three."""
+    app = setup_app()
+    ws = win.workspace
+    ws.show_graph()
+    pump(app, lambda: True)
     g = win.graph
     scale = g.scale_factor()
-    center_h = win.center_split.height()
     view_rect = g.mapToScene(g.viewport().rect()).boundingRect()
     items = [it for it in g.items_.values() if it.node.type != NodeType.CHECK]
     titles_not_full = [it.node.title for it in items
                        if len(it.node.title) <= TITLE_FULL_CHARS and not it.title_layout()[1]]
+    clipped = [f"[graph] {c}" for c in visible_clipping(win)]
+    for idx, name in ((0, "code"), (4, "review")):
+        ws.show_node_tab()
+        ws.node_panel.tabs.setCurrentIndex(idx)
+        pump(app, lambda: True)
+        clipped += [f"[{name}] {c}" for c in visible_clipping(win)]
+    ws.show_graph()
+    pump(app, lambda: True)
+    # popovers: the running-tools list and a pin note
+    win.chat.toggle_tools()
+    pump(app, lambda: True)
+    clipped += [f"[tools popover] {c}" for c in visible_clipping(win)]
+    win.chat.toggle_tools()
+    open_pin_editor(win)
+    pump(app, lambda: True)
+    clipped += [f"[pin popover] {c}" for c in visible_clipping(win)]
+    win.graph.pin_editor.hide()
+    pump(app, lambda: True)
+    chat_w, side_w, ws_w = win.chat.width(), win.sidebar_card.width(), win.workspace_card.width()
+    pills = [b.text() for b in (ws.graph_tab, ws.node_tab) if b.isVisible()]
     return Metrics(
         window=f"{win.width()}x{win.height()}",
+        chat_w=chat_w, sidebar_w=side_w, workspace_w=ws_w,
+        chat_widest=chat_w > max(side_w, ws_w),
         scale=round(scale, 3),
         title_px=round(NODE_TITLE_PX * scale, 2),
-        canvas_frac=round(g.height() / center_h, 3),
-        chat_frac=round(win.chat.height() / center_h, 3),
-        sidebar_w=win.sidebar_card.width(),
-        inspector_w=win.inspector_card.width(),
         nodes_visible=sum(1 for it in items if view_rect.contains(it.sceneBoundingRect())),
-        clipped=clipped_text(win),
+        composer=composer_parts(win),
+        pills=pills,
+        node_tabs=ws.node_panel.tab_labels(),
+        live=ws.live_btn.text(),
+        clipped=clipped,
         titles_not_full=titles_not_full,
     )
 
@@ -191,11 +258,10 @@ def title_fit_samples(item: NodeItem, samples: list[str]) -> list[str]:
     return bad
 
 
-TABLE_HEAD = ("| window | scale | node title px | canvas % | chat % | sidebar | inspector | "
-              "nodes fully in view | clipped text |\n|---|---|---|---|---|---|---|---|---|")
+TABLE_HEAD = ("| window | chat | sidebar | workspace | chat widest | graph scale | node title px | "
+              "nodes fully in view | composer parts | clipped text |\n|---|---|---|---|---|---|---|---|---|---|")
 
 
 def table_row(m: Metrics) -> str:
-    return (f"| {m.window} | {m.scale:.3f} | {m.title_px:.2f} | {m.canvas_frac * 100:.1f} | "
-            f"{m.chat_frac * 100:.1f} | {m.sidebar_w} | {m.inspector_w} | {m.nodes_visible} | "
-            f"{len(m.clipped)} |")
+    return (f"| {m.window} | {m.chat_w} | {m.sidebar_w} | {m.workspace_w} | {'yes' if m.chat_widest else 'no'} | "
+            f"{m.scale:.3f} | {m.title_px:.2f} | {m.nodes_visible} | {len(m.composer)}/6 | {len(m.clipped)} |")

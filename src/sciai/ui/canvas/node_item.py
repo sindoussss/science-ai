@@ -9,6 +9,7 @@ from PyQt6.QtWidgets import QGraphicsItem, QGraphicsSceneMouseEvent, QStyleOptio
 
 from sciai.graph.model import Node, NodeType, Status
 from sciai.ui.canvas.layout import NODE_H, NODE_W, PILL_H, PILL_INSET, PLOT_H
+from sciai.ui.canvas.pins import PIN_D
 from sciai.ui.theme.theme import STATUS_ICON, Theme
 
 PAD = 12
@@ -35,6 +36,7 @@ class NodeItem(QGraphicsItem):
         self.highlight = False
         self.hovered = False
         self.pins: list[tuple[int, float, float]] = []  # (number, rel_x, rel_y)
+        self.pending_pin: tuple[int, float, float] | None = None  # being written in the pin popover
         self.math: str | None = None  # Unicode math for a final answer, set by the view
         self.setAcceptHoverEvents(True)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -51,7 +53,9 @@ class NodeItem(QGraphicsItem):
 
     def boundingRect(self) -> QRectF:  # noqa: N802 - Qt API
         w, h = self.size()
-        return QRectF(-3, -CHIP_H / 2 - 2, w + 6, h + CHIP_H / 2 + 5)  # the status chip straddles the top
+        # the status chip straddles the top; pins (22px) may sit on any edge
+        m = PIN_D / 2 + 2
+        return QRectF(-m, -max(CHIP_H / 2 + 2, m), w + 2 * m, h + max(CHIP_H / 2 + 2, m) + m)
 
     def title_layout(self) -> tuple[str, bool]:
         """(text drawn in the title row, whether the full title fits). Used by paint and the metrics test."""
@@ -150,14 +154,15 @@ class NodeItem(QGraphicsItem):
             p.drawText(QRectF(x, BODY_Y, room, BODY_H), Qt.AlignmentFlag.AlignVCenter,
                        QFontMetricsF(font).elidedText(text, Qt.TextElideMode.ElideRight, room))
 
-        for num, rx, ry in self.pins:
+        for num, rx, ry in [*self.pins, *([self.pending_pin] if self.pending_pin else [])]:
             c = QPointF(rx * w, ry * h)
+            r = PIN_D / 2
             p.setPen(QPen(t.c("panel"), 1.5))
             p.setBrush(QBrush(t.c("pin")))
-            p.drawEllipse(c, 8, 8)
+            p.drawEllipse(c, r, r)
             p.setPen(t.c("accent_text"))
             p.setFont(t.ui_font("size_small_px", bold=True))
-            p.drawText(QRectF(c.x() - 8, c.y() - 8, 16, 16), Qt.AlignmentFlag.AlignCenter, str(num))
+            p.drawText(QRectF(c.x() - r, c.y() - r, PIN_D, PIN_D), Qt.AlignmentFlag.AlignCenter, str(num))
 
     def _paint_pill(self, p: QPainter, w: float, h: float) -> None:
         """Check node: a 22px pill under its target with the outcome on the right."""

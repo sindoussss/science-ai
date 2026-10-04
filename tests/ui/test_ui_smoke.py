@@ -38,17 +38,16 @@ def test_light_theme_is_default_and_tokens_complete():
         assert f"status_{status}" in light.tokens["color"]
 
 
-def test_task_fills_graph_and_inspector(window, qtbot, tmp_path):
-    window.chat.input.setText(QUESTION)
+def test_task_fills_graph_and_node_panel(window, qtbot, tmp_path):
+    window.chat.input.setPlainText(QUESTION)
     window.chat._submit()
     qtbot.waitUntil(lambda: any(n.type == NodeType.FINAL for n in window.graph.nodes.values()), timeout=30000)
     qtbot.waitUntil(lambda: not window.executor.is_busy, timeout=30000)
     finals = [n for n in window.graph.nodes.values() if n.type == NodeType.FINAL]
     assert finals[0].status == Status.VERIFIED
     assert "-pi**2" in window.chat.transcript_text()
-    assert window.inspector.node is not None
-    assert window.inspector.tabs.count() == 5
-    assert [window.inspector.tabs.tabText(i) for i in range(5)] == ["Code", "Log", "Chat", "Env", "Review"]
+    assert window.node_panel.node is not None
+    assert window.node_panel.tab_labels() == ["Code", "Execution Log", "Messages", "Environment", "Review"]
     window.grab().save(str(tmp_path / "window.png"))
 
     # Pin a note on the derivative node: triggers a deterministic re-check (no model call).
@@ -57,18 +56,19 @@ def test_task_fills_graph_and_inspector(window, qtbot, tmp_path):
     window.graph.pin_editor.text.setPlainText("recheck this derivative")
     window.graph.pin_editor._send()
     qtbot.waitUntil(lambda: "Re-check of" in window.chat.transcript_text(), timeout=30000)
+    assert "Note 1 on n2: recheck this derivative" in window.chat.transcript_text()  # a system line
     assert window.graph.items_[diff.id].pins == [(1, 0.5, 0.5)]
     msgs = window.rt.repo.messages(window.session_id, diff.id)
     assert msgs[-1]["pin_number"] == 1
 
 
 def test_locked_node_cannot_be_deleted(window, qtbot):
-    window.chat.input.setText(QUESTION)
+    window.chat.input.setPlainText(QUESTION)
     window.chat._submit()
     qtbot.waitUntil(lambda: any(n.type == NodeType.FINAL for n in window.graph.nodes.values()), timeout=30000)
     qtbot.waitUntil(lambda: not window.executor.is_busy, timeout=30000)
     diff = next(n for n in window.graph.nodes.values() if n.tool_name == "sympy.diff")
-    window.inspector.lock_toggled.emit(diff.id, True)
+    window.node_panel.lock_toggled.emit(diff.id, True)
     qtbot.waitUntil(lambda: window.rt.repo.get_node(diff.id).locked, timeout=10000)
     from sciai.graph.engine import GraphRuleError
     with pytest.raises(GraphRuleError):
@@ -79,8 +79,8 @@ def test_restyle_single_primary_and_delete_in_menu(window):
     from PyQt6.QtWidgets import QPushButton
     primaries = [b for b in window.findChildren(QPushButton) if b.objectName() == "primary"]
     assert [b.text() for b in primaries] == ["Download script"]
-    assert window.inspector.delete_action.text().startswith("Delete")
-    assert not any(b.text() == "Delete" for b in window.inspector.findChildren(QPushButton))
+    assert window.node_panel.delete_action.text().startswith("Delete")
+    assert not any(b.text() == "Delete" for b in window.node_panel.findChildren(QPushButton))
     from PyQt6.QtCore import Qt
     assert window.graph.horizontalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAlwaysOff
     assert window.graph.verticalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAlwaysOff

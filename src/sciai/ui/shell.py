@@ -86,13 +86,16 @@ class HairlineSplitter(QSplitter):
     ``max_last_fraction``."""
 
     def __init__(self, orientation: Qt.Orientation, theme: Theme, last_fraction: float | None = None,
-                 max_last_fraction: float = 1.0) -> None:
+                 max_last_fraction: float = 1.0, last_px: int | None = None) -> None:
         super().__init__(orientation)
         self.color = theme.c("border")
         self.setHandleWidth(7)
         self.setChildrenCollapsible(False)
         self.max_last_fraction = max_last_fraction
         self.last_fraction = last_fraction
+        # last_px: the last pane keeps this many px across window resizes (the first pane
+        # absorbs the change); dragging the handle sets a new value within the pane's min/max.
+        self.last_px = last_px
         self.splitterMoved.connect(self._moved)
 
     def createHandle(self) -> QSplitterHandle:  # noqa: N802
@@ -105,6 +108,9 @@ class HairlineSplitter(QSplitter):
         return self.height() if self.orientation() == Qt.Orientation.Vertical else self.width()
 
     def _apply_fraction(self) -> None:
+        if self.last_px is not None and self.count() == 2:
+            self._apply_px()
+            return
         if self.last_fraction is None or self.count() != 2:
             return
         total = self._length()
@@ -117,7 +123,24 @@ class HairlineSplitter(QSplitter):
         self.setSizes([avail - last, last])
         self.blockSignals(False)
 
+    def _apply_px(self) -> None:
+        last = self.widget(1)
+        if not last.isVisible() and self.isVisible():
+            return  # collapsed (Ctrl+G): the first pane has everything
+        avail = self._length() - self.handleWidth()
+        first_min = self.widget(0).minimumWidth() if self.orientation() == Qt.Orientation.Horizontal \
+            else self.widget(0).minimumHeight()
+        lo, hi = (last.minimumWidth(), last.maximumWidth()) if self.orientation() == Qt.Orientation.Horizontal \
+            else (last.minimumHeight(), last.maximumHeight())
+        px = max(lo, min(hi, self.last_px or lo, avail - first_min))
+        self.blockSignals(True)
+        self.setSizes([max(0, avail - px), px])
+        self.blockSignals(False)
+
     def _moved(self, _pos: int, _index: int) -> None:
+        if self.last_px is not None and self.count() == 2:
+            self.last_px = self.sizes()[1]
+            return
         if self.last_fraction is None or self.count() != 2:
             return
         total = self._length()
@@ -143,6 +166,41 @@ class ElidedLabel(QLabel):
         self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.setToolTip(text)
 
+    def set_full(self, text: str) -> None:
+        self.full = text
+        self.setToolTip(text)
+        self._elide()
+
+    def _elide(self) -> None:
+        self.setText(self.fontMetrics().elidedText(self.full, Qt.TextElideMode.ElideRight,
+                                                   self.contentsRect().width()))
+
     def resizeEvent(self, event) -> None:  # noqa: N802, ANN001
         super().resizeEvent(event)
-        self.setText(self.fontMetrics().elidedText(self.full, Qt.TextElideMode.ElideRight, self.width()))
+        self._elide()
+
+
+class CapsLabel(QWidget):
+    """Small-caps, letter-spaced gray caption ("TOOLS · 8"). Painted: QSS has no letter-spacing."""
+
+    def __init__(self, text: str, theme: Theme, size_key: str = "size_caption_px") -> None:
+        super().__init__()
+        self.theme, self.text, self.size_key = theme, text, size_key
+        self.setFixedHeight(22)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
+    def set_text(self, text: str) -> None:
+        self.text = text
+        self.update()
+
+    def paintEvent(self, event: QPaintEvent) -> None:  # noqa: N802
+        from PyQt6.QtGui import QFont
+
+        p = QPainter(self)
+        f = self.theme.ui_font(self.size_key, bold=True)
+        f.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 0.6)
+        f.setCapitalization(QFont.Capitalization.AllUppercase)
+        p.setFont(f)
+        p.setPen(self.theme.c("popover_head"))
+        p.drawText(self.rect(), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, self.text)
+        p.end()

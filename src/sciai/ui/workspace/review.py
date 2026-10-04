@@ -9,7 +9,7 @@ from PyQt6.QtGui import QBrush, QPainter, QPen
 from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QScrollArea, QVBoxLayout, QWidget
 
 from sciai.graph.model import Evidence, Node
-from sciai.ui.layout_util import clear_layout
+from sciai.ui.layout_util import FlowLayout, clear_layout
 from sciai.ui.theme.theme import Theme
 
 LADDER = (("retried", "Retry"), ("backtracked", "Backtrack"), ("escalated", "Escalate"))
@@ -156,7 +156,7 @@ class ReviewPanel(QScrollArea):
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         body = QWidget()
         self.lay = QVBoxLayout(body)
-        self.lay.setContentsMargins(2, 12, 6, 12)
+        self.lay.setContentsMargins(0, 8, 6, 12)
         self.lay.setSpacing(8)
         self.setWidget(body)
         self.show_details = False
@@ -190,10 +190,20 @@ class ReviewPanel(QScrollArea):
             none = QLabel("None fired.")
             none.setObjectName("muted")
             self.lay.addWidget(none)
-        for f in fired:
-            row = QLabel(f"<b>{RULE_LABEL.get(f['rule'], f['rule'])}</b> · {f['reason']}")
-            row.setWordWrap(True)
-            self.lay.addWidget(row)
+        if fired:
+            host = QWidget()
+            flow = FlowLayout(host, spacing=6)
+            for f in fired:
+                chip = QLabel(RULE_LABEL.get(f["rule"], f["rule"]))
+                chip.setObjectName("ruleChip")
+                chip.setToolTip(f["reason"])
+                flow.addWidget(chip)
+            self.lay.addWidget(host)
+            for f in fired:
+                why = QLabel(f"{RULE_LABEL.get(f['rule'], f['rule'])}: {f['reason']}")
+                why.setObjectName("secondary")
+                why.setWordWrap(True)
+                self.lay.addWidget(why)
         if node.risk.get("pending_checks"):
             pend = QLabel("Waiting for a check: " + ", ".join(
                 METHOD_LABEL.get(m, m) for m in node.risk["pending_checks"]))

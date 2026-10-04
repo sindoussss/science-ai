@@ -14,7 +14,7 @@ ARROW = 6.0
 
 
 class EdgeItem(QGraphicsItem):
-    """Arrow from a node to what it depends on (src -> dst)."""
+    """Arrow between two nodes; on the top-to-bottom canvas it runs down from a dependency into its dependent."""
 
     def __init__(self, kind: EdgeKind, theme: Theme) -> None:
         super().__init__()
@@ -33,8 +33,8 @@ class EdgeItem(QGraphicsItem):
         self.prepareGeometryChange()
         path = QPainterPath(a)
         if vertical:
-            dy = max(12.0, abs(b.y() - a.y()) * 0.5)
-            c1, c2 = QPointF(a.x(), a.y() - dy), QPointF(b.x(), b.y() + dy)
+            dy = max(12.0, abs(b.y() - a.y()) * 0.5) * (1 if b.y() >= a.y() else -1)
+            c1, c2 = QPointF(a.x(), a.y() + dy), QPointF(b.x(), b.y() - dy)
         else:
             dx = max(24.0, abs(b.x() - a.x()) * 0.45)
             c1, c2 = QPointF(a.x() - dx, a.y()), QPointF(b.x() + dx, b.y())
