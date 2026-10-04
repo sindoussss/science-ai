@@ -135,8 +135,10 @@ def regression_text(r: dict[str, Any]) -> str:
 def adjusted_text(r: dict[str, Any]) -> str:
     items = ", ".join(f"{lbl} {num(p, 3)} to {num(q, 3)}"
                       for lbl, p, q in zip(r.get("labels", []), r.get("p", []), r.get("p_adjusted", [])))
+    sig = [lbl for lbl, s in zip(r.get("labels", []), r.get("significant", [])) if s]
     return f"{r.get('method', 'Holm').capitalize()}-adjusted p for {len(r.get('p', []))} tests on " \
-           f"{r.get('family', 'the same data')}: {items}; alpha {num(r.get('alpha'))}"
+           f"{r.get('family', 'the same data')}: {items}; alpha {num(r.get('alpha'))}; " \
+           f"significant after adjustment: {', '.join(sig) if sig else 'none'}"
 
 
 def diagnostic_text(d: dict[str, Any]) -> str:

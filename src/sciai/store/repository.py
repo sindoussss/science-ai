@@ -424,6 +424,20 @@ class Repository:
                  rec.stored_path, rec.original_path, rec.rows, rec.columns, json.dumps(rec.schema), rec.imported_at))
         return rec
 
+    def delete_dataset(self, dataset_id: str) -> None:
+        with self.db.tx() as c:
+            c.execute("DELETE FROM datasets WHERE id=?", (dataset_id,))
+
+    def datasets_with_sha(self, sha256: str) -> list[DatasetRecord]:
+        return [_dataset_from_row(r) for r in self.db.query("SELECT * FROM datasets WHERE sha256=?", (sha256,))]
+
+    def nodes_reading(self, sha256: str) -> list[Node]:
+        """Dataset nodes (data.load results) that read the file with this SHA-256, in any session."""
+        rows = self.db.query(
+            f"SELECT {_NODE_COLS} FROM nodes WHERE tool_name='data.load' "
+            "AND json_extract(tool_inputs, '$.sha256')=? ORDER BY created_at", (sha256,))
+        return [node_from_row(r) for r in rows]
+
     def dataset(self, dataset_id: str) -> DatasetRecord | None:
         row = self.db.query_one("SELECT * FROM datasets WHERE id=?", (dataset_id,))
         return None if row is None else _dataset_from_row(row)

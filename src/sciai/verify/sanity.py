@@ -57,7 +57,43 @@ def sanity_issues(result: dict[str, Any] | None, args: dict[str, Any] | None = N
             issues.append("series is not finite")
         elif values:
             issues += _num_issues(max(values, key=abs))
+    elif kind == "stats":
+        issues += _stats_issues(result)
+    elif kind == "adjusted":
+        if not all(isinstance(p, (int, float)) and 0 <= p <= 1 for p in result.get("p_adjusted", [])):
+            issues.append("an adjusted p-value is outside [0, 1]")
+    elif kind == "dataset":
+        parent = result.get("parent_rows")
+        if parent and result.get("rows", 0) < 0.5 * parent:
+            issues.append(f"the filter keeps {result['rows']} of {parent} rows (under half)")
+    elif kind == "table":
+        for row in result.get("rows", []):
+            if len(row) >= 3 and result.get("columns", [None, None, None])[1:3] == ["n", "missing"]:
+                n, miss = row[1] or 0, row[2] or 0
+                if n + miss and miss > 0.2 * (n + miss):
+                    issues.append(f"column {row[0]} is {round(100 * miss / (n + miss))}% missing")
     elif kind == "list":
         for item in result.get("value", []):
             issues += sanity_issues(item, args, plausibility)
+    return issues
+
+
+def _stats_issues(r: dict[str, Any]) -> list[str]:
+    issues = []
+    p = r.get("p")
+    if not (isinstance(p, (int, float)) and 0 <= p <= 1):
+        issues.append("p-value is outside [0, 1]")
+    stat = (r.get("statistic") or {}).get("value")
+    if not (isinstance(stat, (int, float)) and math.isfinite(stat)):
+        issues.append("test statistic is not finite")
+    effect = r.get("effect") or {}
+    if r.get("test") in ("pearson", "spearman") or "biserial" in str(effect.get("name", "")):
+        if not -1 <= float(effect.get("value", 0)) <= 1:
+            issues.append("correlation is outside [-1, 1]")
+    for name in ("r2",):
+        if name in r and not 0 <= float(r[name]) <= 1 + 1e-12:
+            issues.append("R^2 is outside [0, 1]")
+    ci = effect.get("ci")
+    if ci and not (ci[0] <= effect.get("value", ci[0]) <= ci[1] or "bootstrap" in str(effect.get("ci_method"))):
+        issues.append("the effect lies outside its own confidence interval")
     return issues

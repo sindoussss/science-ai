@@ -18,13 +18,17 @@ import shutil
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from sciai.config import DataConfig
 from sciai.domains.data import frames
 from sciai.domains.data.frames import DataError
+from sciai.graph.model import Status, TERMINAL_BAD
 from sciai.store.repository import DatasetRecord, Repository
 from sciai.tools.sandbox import Runner
+
+if TYPE_CHECKING:
+    from sciai.graph.engine import GraphEngine
 
 STORED_SUFFIX = {"csv": ".csv", "tsv": ".tsv", "xlsx": ".xlsx"}
 
@@ -89,3 +93,20 @@ def load_args(rec: DatasetRecord, cfg: DataConfig) -> dict[str, Any]:
     so the read is the one that was checked at import)."""
     return {"path": rec.stored_path, "format": rec.format, "sha256": rec.sha256, "name": rec.name,
             "options": rec.options, "max_rows": int(cfg.max_rows)}
+
+
+def remove_dataset(rec: DatasetRecord, engine: "GraphEngine") -> list[str]:
+    """The user removes an imported file: every node that read it is invalidated (in every
+    session), which cascades to every result, plot and answer built on it. The record goes, and
+    the stored copy too unless another record (the same bytes under another name or read
+    another way) still uses it. Returns the invalidated dataset node ids."""
+    hit = []
+    for node in engine.repo.nodes_reading(rec.sha256):
+        same_read = (node.tool_inputs or {}).get("options") == rec.options
+        if same_read and node.status not in TERMINAL_BAD:
+            engine.set_status(node.id, Status.INVALIDATED, f"dataset {rec.name} was removed")
+            hit.append(node.id)
+    engine.repo.delete_dataset(rec.id)
+    if not engine.repo.datasets_with_sha(rec.sha256):
+        Path(rec.stored_path).unlink(missing_ok=True)
+    return hit

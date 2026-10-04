@@ -23,6 +23,7 @@ COLUMN = {"type": "string", "minLength": 1, "maxLength": 120}
 COLUMNS = {"type": "array", "items": COLUMN, "minItems": 1, "maxItems": 30}
 QUANTILE_METHOD = "linear interpolation between order statistics (Hyndman-Fan type 7)"
 AGGS = ("mean", "median", "sum", "count", "sd", "min", "max")
+METHODS = ("pandas", "numpy")  # how a summary is computed; a retry after a failed check switches
 REL_TOL = 1e-9
 
 
@@ -115,6 +116,22 @@ def _numeric_columns(df: Any, desc: dict[str, Any], requested: list[str] | None)
     return cols
 
 
+def _summary_row(values: Any, method: str) -> list[float | None]:
+    """mean, sd, min, q1, median, q3, max of non-missing values: pandas methods, or NumPy
+    functions on the raw array (the method a retry switches to)."""
+    import numpy as np
+
+    n = len(values)
+    if method == "numpy":
+        a = values.to_numpy(dtype=float)
+        q = np.quantile(a, [0.25, 0.5, 0.75], method="linear")
+        return [float(np.mean(a)), float(np.std(a, ddof=1)) if n > 1 else None, float(a.min()),
+                float(q[0]), float(q[1]), float(q[2]), float(a.max())]
+    q = values.quantile([0.25, 0.5, 0.75])
+    return [float(values.mean()), float(values.std(ddof=1)) if n > 1 else None, float(values.min()),
+            float(q.loc[0.25]), float(q.loc[0.5]), float(q.loc[0.75]), float(values.max())]
+
+
 def describe_fn(args: dict[str, Any]) -> dict[str, Any]:
     desc = frames.require_descriptor(args["dataset"])
     df = frames.load(desc)
@@ -126,9 +143,7 @@ def describe_fn(args: dict[str, Any]) -> dict[str, Any]:
         if n == 0:
             rows.append([col, 0, int(s.isna().sum())] + [None] * 7)
             continue
-        q = v.quantile([0.25, 0.5, 0.75])
-        rows.append([col, n, int(s.isna().sum()), float(v.mean()), float(v.std(ddof=1)) if n > 1 else None,
-                     float(v.min()), float(q.loc[0.25]), float(q.loc[0.5]), float(q.loc[0.75]), float(v.max())])
+        rows.append([col, n, int(s.isna().sum()), *_summary_row(v, args.get("method", "pandas"))])
     return _ok({"kind": "table", "title": f"summary of {desc.get('name', 'dataset')}",
                 "columns": ["column", "n", "missing", "mean", "sd", "min", "q1", "median", "q3", "max"],
                 "rows": rows, "note": f"sd uses n - 1; quartiles by {QUANTILE_METHOD}",
@@ -138,9 +153,10 @@ def describe_fn(args: dict[str, Any]) -> dict[str, Any]:
 register(ToolSpec(
     name="data.describe", domain=Domain.DATA, kind="solver",
     description="n, missing, mean, sd, min, quartiles and max of numeric columns",
-    schema=schema({"dataset": DATASET, "columns": COLUMNS}, ["dataset"]),
-    fn=describe_fn, canonical=lambda a: canon_dataset(a, column_lists=("columns",)),
-    dataset_arg="dataset",
+    schema=schema({"dataset": DATASET, "columns": COLUMNS, "method": {"enum": list(METHODS)}}, ["dataset"]),
+    fn=describe_fn, canonical=lambda a: {**canon_dataset(a, column_lists=("columns",)),
+                                         "method": a.get("method", "pandas")},
+    dataset_arg="dataset", methods=METHODS,
 ))
 
 
@@ -368,13 +384,17 @@ def group_fn(args: dict[str, Any]) -> dict[str, Any]:
         n = int(part.size)
         if agg == "count":
             stat: float | None = float(n)
-        elif n == 0:
+        elif n == 0 or (agg == "sd" and n < 2):
             stat = None
+        elif args.get("method") == "numpy":
+            import numpy as np
+
+            a = part.to_numpy(dtype=float)
+            stat = float({"mean": np.mean, "median": np.median, "sum": np.sum, "min": np.min, "max": np.max,
+                          "sd": lambda x: np.std(x, ddof=1)}[agg](a))
         else:
             stat = float({"mean": part.mean, "median": part.median, "sum": part.sum, "min": part.min,
                           "max": part.max}.get(agg, lambda: part.std(ddof=1))())
-            if agg == "sd" and n < 2:
-                stat = None
         rows.append([key, stat, n])
     if not rows:
         raise DataError(f"column {by!r} has no values to group by")
@@ -386,10 +406,11 @@ def group_fn(args: dict[str, Any]) -> dict[str, Any]:
 register(ToolSpec(
     name="data.group", domain=Domain.DATA, kind="solver",
     description="aggregate a column per group: by, column, agg=mean|median|sum|count|sd|min|max",
-    schema=schema({"dataset": DATASET, "by": COLUMN, "column": COLUMN, "agg": {"enum": list(AGGS)}},
-                  ["dataset", "by", "column"]),
-    fn=group_fn, canonical=lambda a: {**canon_dataset(a, columns=("by", "column")), "agg": a.get("agg", "mean")},
-    dataset_arg="dataset",
+    schema=schema({"dataset": DATASET, "by": COLUMN, "column": COLUMN, "agg": {"enum": list(AGGS)},
+                   "method": {"enum": list(METHODS)}}, ["dataset", "by", "column"]),
+    fn=group_fn, canonical=lambda a: {**canon_dataset(a, columns=("by", "column")), "agg": a.get("agg", "mean"),
+                                      "method": a.get("method", "pandas")},
+    dataset_arg="dataset", methods=METHODS,
 ))
 
 

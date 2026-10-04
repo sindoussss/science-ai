@@ -149,6 +149,11 @@ def result_to_text(result: dict[str, Any]) -> str:
         text = f"{finals} at {result.get('var', 't')} = {float(t[-1]):.10g}"
     elif kind == "plotspec":
         text = f"plot ({len(value.get('x', []))} points)"
+    elif kind in ("dataset", "table", "stats", "adjusted"):
+        from sciai.domains.data import report
+
+        text = {"dataset": report.dataset_text, "table": report.table_text, "stats": report.stats_text,
+                "adjusted": report.adjusted_text}[kind](result)
     else:
         text = str(value)
     return f"{text} {units}" if units else text

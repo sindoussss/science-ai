@@ -16,6 +16,10 @@ Rules:
 - Reuse existing nodes instead of recomputing them.
 - Physics: pass values with units as {"value":20,"unit":"m/s"} copied from the givens or from earlier
   results; get constants (g, c, h, e, k_B...) from phys.constant, never from memory. Angles keep their unit.
+- Data: "dataset" is a file name from DATASETS or a dataset node handle. Use only the listed column names
+  and levels; you never see the rows, so every number comes from data.* or stats.* tools.
+  Leave "alpha" out unless the question states one. Tests on the same data are Holm-adjusted for you.
+  Use the word "significant" only with the test's node in answer_nodes.
 - Keep "thought" under 20 words.
 
 Tools:

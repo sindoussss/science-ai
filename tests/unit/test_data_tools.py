@@ -173,6 +173,8 @@ def test_describe_and_its_check(trial):
     assert score[4] == pytest.approx(math.sqrt(8.825))
     assert score[5:] == [12.5, 14.0, 17.0, 18.5, 19.5]
     assert run("data.check_describe", dataset=trial, table=t)["outcome"] == "pass"
+    alt = run("data.describe", dataset=trial, columns=["score", "mass"], method="numpy")
+    assert alt["rows"] == [pytest.approx(r) for r in t["rows"]]
     wrong = copy.deepcopy(t)
     wrong["rows"][0][3] = 16.4  # an injected wrong mean
     out = run("data.check_describe", dataset=trial, table=wrong)
@@ -222,7 +224,7 @@ def test_fingerprints_use_the_dataset_key_and_real_column_names(trial):
     canon = get("data.describe").canonical
     a = canon({"dataset": trial, "columns": ["SCORE"]})
     b = canon({"dataset": trial, "columns": ["score [points]"]})
-    assert a == b == {"dataset": trial["key"], "columns": ["score [points]"]}
+    assert a == b == {"dataset": trial["key"], "columns": ["score [points]"], "method": "pandas"}
     canon = get("stats.ttest").canonical
     assert canon({"dataset": trial, "column": "score", "by": "GROUP"}) == \
         canon({"dataset": trial, "column": "score [points]", "by": "group", "alternative": "two-sided",

@@ -35,8 +35,26 @@ class Verifier:
         self.runner = runner
         self.plausibility = plausibility
 
+    def check_inputs(self, node: Node) -> dict[str, Any] | None:
+        """The node's tool inputs as its checks need them: a dataset argument (stored as the
+        dataset node's id) becomes that node's descriptor."""
+        inputs = node.tool_inputs
+        if not node.tool_name or inputs is None:
+            return inputs
+        try:
+            spec = get_tool(node.tool_name)
+        except KeyError:
+            return inputs
+        ref = inputs.get(spec.dataset_arg) if spec.dataset_arg else None
+        if isinstance(ref, str):
+            try:
+                inputs = {**inputs, spec.dataset_arg: self.engine.resolve(ref).result}
+            except KeyError:
+                return None  # the dataset node is gone: nothing can be re-checked
+        return inputs
+
     def offered(self, node: Node) -> list[tuple[CheckPlan, dict[str, Any]]]:
-        plans = plans_for(node.tool_name, node.tool_inputs, node.result)
+        plans = plans_for(node.tool_name, self.check_inputs(node), node.result)
         if not self.plausibility:
             plans = [(p, a) for p, a in plans if p.method != "plausibility"]
         return plans
