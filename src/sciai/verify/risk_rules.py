@@ -37,14 +37,25 @@ def _same_result(a: dict[str, Any] | None, b: dict[str, Any] | None) -> bool:
     if a.get("kind") == "number" and b.get("kind") == "number":
         x, y = float(a["value"]), float(b["value"])
         return abs(x - y) <= 1e-9 * max(1.0, abs(x), abs(y))
+    if a.get("kind") == "quantity" and b.get("kind") == "quantity":
+        x, y = float(a["si_value"]), float(b["si_value"])
+        return a.get("dims") == b.get("dims") and abs(x - y) <= 1e-9 * max(abs(x), abs(y), 1e-300)
     if a.get("kind") == "list" and b.get("kind") == "list":
         return len(a["value"]) == len(b["value"]) and all(
             _same_result(p, q) for p, q in zip(a["value"], b["value"]))
     return a == b
 
 
+def _has_quantity(result: dict[str, Any] | None) -> bool:
+    if not result:
+        return False
+    if result.get("kind") == "quantity":
+        return True
+    return result.get("kind") == "list" and any(_has_quantity(v) for v in result.get("value", []))
+
+
 def assess(engine: "GraphEngine", node: Node, spec: ToolSpec | None, cfg: RiskConfig,
-           *, user_facing: bool = False, extra_dependents: int = 0) -> RiskReport:
+           *, user_facing: bool = False, extra_dependents: int = 0, plausibility: bool = True) -> RiskReport:
     """``extra_dependents`` counts dependents about to be added (e.g. the final answer)."""
     report = RiskReport()
     args = node.tool_inputs or {}
@@ -57,7 +68,7 @@ def assess(engine: "GraphEngine", node: Node, spec: ToolSpec | None, cfg: RiskCo
         report.add("stakes", "it is part of the final answer")
 
     # Surprise: sanity failures, or a contradiction with existing graph content.
-    for issue in sanity_issues(node.result, args):
+    for issue in sanity_issues(node.result, args, plausibility):
         report.add("surprise", issue)
     if node.fingerprint:
         for other in engine.repo.find_by_fingerprint(
@@ -76,4 +87,7 @@ def assess(engine: "GraphEngine", node: Node, spec: ToolSpec | None, cfg: RiskCo
     # Step type: the always-check list.
     if spec is not None and spec.requires_check(args):
         report.add("step_type", f"{spec.name} is on the always-check list")
+    # Units: a value with units is never verified without its dimensional check.
+    if _has_quantity(node.result):
+        report.add("units", "a result with units needs its dimensional check")
     return report

@@ -248,6 +248,19 @@ class GraphEngine:
         node.locked = locked
         self.update(node)
 
+    def reject_assumption(self, ref: str, reason: str = "rejected by user") -> CascadeReport | None:
+        """The user withdraws a modelling assumption: it fails, and every result built on it
+        (in any session) is invalidated. It is unlocked first so no warning sticks to it."""
+        node = self.resolve(ref)
+        if node.type != NodeType.ASSUMPTION:
+            raise GraphRuleError(f"{self.handle(node.id)} is not an assumption")
+        if node.status in TERMINAL_BAD:
+            return None
+        if node.locked:
+            node.locked = False
+            self.update(node)
+        return self.set_status(node.id, Status.FAILED, reason)
+
     def demote(self, ref: str, *, automatic: bool, reason: str = "demoted") -> None:
         """Verified -> proposed (needs re-check). Automatic demotion skips locked nodes."""
         node = self.resolve(ref)

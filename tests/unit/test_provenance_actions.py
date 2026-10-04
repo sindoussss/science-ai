@@ -35,3 +35,32 @@ def test_parse_action():
         parse_action('{"action":"call_tool","tool":"sympy.diff"}')
     with pytest.raises(ActionError):
         parse_action('{"action":"finish","answer_template":"x","answer_nodes":["bad handle"]}')
+
+
+def test_quantity_provenance_needs_matching_si_value_and_dimension():
+    from sciai.controller.provenance import unsourced
+
+    givens = {"givens": {"v": {"value": 60, "unit": "mph"}, "t": {"value": 2, "unit": "s"}}}
+    ok = {"expr": "v*t", "values": {"v": {"value": 96.56064, "unit": "km/h"}, "t": {"value": 2, "unit": "s"}}}
+    assert unsourced(ok, [givens], 10) == []
+    wrong_unit = {"expr": "v*t", "values": {"v": {"value": 60, "unit": "km/h"}, "t": {"value": 2, "unit": "s"}}}
+    assert unsourced(wrong_unit, [givens], 10) == ["60 km/h"]
+    wrong_dim = {"expr": "v", "values": {"v": {"value": 2, "unit": "m"}}}
+    assert unsourced(wrong_dim, [givens], 10) == ["2 m"]
+    # A quantity result of an ancestor sources the same value in other units.
+    result = {"kind": "quantity", "value": 26.8224, "unit": "m/s", "si_value": 26.8224,
+              "si_unit": "meter / second", "dims": {"[length]": 1, "[time]": -1}}
+    assert unsourced({"expr": "v", "values": {"v": {"value": 60, "unit": "mph"}}}, [result], 10) == []
+    # Plain numbers keep the Phase 1 rule.
+    assert unsourced({"expr": "x*37"}, ["question with 37"], 10) == []
+    assert unsourced({"expr": "x*37"}, ["question"], 10) == ["37"]
+
+
+def test_si_value_of_a_given_sources_plain_si_numbers():
+    from sciai.controller.provenance import unsourced
+
+    givens = {"givens": {"R": {"value": 1, "unit": "kohm"}, "C": {"value": 1, "unit": "uF"},
+                         "t": {"value": 2, "unit": "ms"}}}
+    args = {"equation": "Derivative(v(t), t) = -v(t)/(1000*1e-6)", "t_span": ["0", "0.002"]}
+    assert unsourced(args, [givens], 10) == []
+    assert unsourced({"t_span": ["0", "0.003"]}, [givens], 10) == ["0.003"]

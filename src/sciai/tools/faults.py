@@ -12,10 +12,16 @@ class FaultyRunner:
     """Wraps a runner; for ``tool``, corrupts the results of the given call numbers (1-based).
     ``calls=None`` corrupts every call. Checkers and canonicalization are never touched."""
 
-    def __init__(self, inner: Runner, tool: str, wrong_expr: str, calls: set[int] | None = None) -> None:
+    def __init__(self, inner: Runner, tool: str, wrong_expr: str | None = None, calls: set[int] | None = None,
+                 corrupt: Callable[[dict[str, Any]], dict[str, Any]] | None = None) -> None:
+        """``wrong_expr`` replaces the result with that expression; ``corrupt`` maps the real
+        result to a wrong one instead (e.g. a quantity in the wrong unit)."""
+        if (wrong_expr is None) == (corrupt is None):
+            raise ValueError("give exactly one of wrong_expr and corrupt")
         self.inner = inner
         self.tool = tool
         self.wrong = wrong_expr
+        self.corrupt = corrupt
         self.calls = calls
         self.count = 0
         self.corrupted: list[int] = []
@@ -30,7 +36,8 @@ class FaultyRunner:
         self.count += 1
         if self.calls is None or self.count in self.calls:
             out = copy.deepcopy(out)
-            out.value["result"] = expr_result(parse(self.wrong))
+            res = out.value["result"]
+            out.value["result"] = self.corrupt(res) if self.corrupt else expr_result(parse(self.wrong or ""))
             self.corrupted.append(self.count)
         return out
 

@@ -41,6 +41,15 @@ class ToolSpec:
     methods: tuple[str, ...] = ("default",)
     cost: int = 1
     script: Callable[[dict[str, Any]], str] | None = field(default=None, compare=False)
+    # Custom canonical form for fingerprints (quantities in SI, netlists sorted...); runs in the sandbox.
+    canonical: Callable[[dict[str, Any]], dict[str, Any]] | None = field(default=None, compare=False)
+    # An argument holding a domain entity (a circuit netlist): the controller stores it as an
+    # entity node, and the result depends on that node.
+    entity_arg: str | None = None
+    describe_entity: Callable[[Any], str] | None = field(default=None, compare=False)
+    # An argument naming a graph node (a handle like "n5"): the controller resolves it, the result
+    # depends on that node, and the node's result is passed to the tool as "data".
+    node_arg: str | None = None
 
     def validate(self, args: dict[str, Any]) -> None:
         jsonschema.validate(args, self.schema)
@@ -93,7 +102,16 @@ def load_builtin_tools() -> None:
     if _loaded:
         return
     _loaded = True
-    from sciai.tools import numeric_tools, plot_tools, sympy_tools, units_tools  # noqa: F401
+    from sciai.tools import (  # noqa: F401
+        circuit_tools,
+        linalg_tools,
+        numeric_tools,
+        ode_tools,
+        phys_tools,
+        plot_tools,
+        sympy_tools,
+        units_tools,
+    )
 
 
 def schema(properties: dict[str, Any], required: list[str]) -> dict[str, Any]:

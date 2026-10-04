@@ -30,17 +30,42 @@ def _line(engine: "GraphEngine", node: Node) -> str:
     if len(res) > MAX_RESULT_CHARS:
         res = res[: MAX_RESULT_CHARS - 3] + "..."
     what = node.tool_name or node.type.value
+    h = engine.handle(node.id)
     if node.type == NodeType.PROBLEM:
-        return f"{engine.handle(node.id)} [problem] {node.content}"
-    text = f"{engine.handle(node.id)} [{status}] {what}"
+        return f"{h} [problem] {node.content}{_givens(node)}"
+    if node.type == NodeType.ASSUMPTION:
+        tag = "rejected" if node.status == Status.FAILED else (
+            "assumed" if node.status != Status.INVALIDATED else "invalidated")
+        return f"{h} [{tag}] {node.content}"
+    if node.type == NodeType.ENTITY:
+        return f"{h} [entity] {node.title}: {node.content[:MAX_RESULT_CHARS]}"
+    text = f"{h} [{status}] {what}"
     if node.tool_inputs and node.type == NodeType.TOOL_RESULT:
-        args = ", ".join(f"{k}={v}" for k, v in node.tool_inputs.items() if k != "assumptions")
+        entities = {}
+        for d in engine.g.successors(node.id):
+            dep = engine.nodes.get(d)
+            if dep is not None and dep.type == NodeType.ENTITY and d in engine.handles:
+                entities[(dep.tool_inputs or {}).get("arg")] = engine.handle(d)
+        args = ", ".join(f"{k}={entities.get(k, engine.handles.get(v, v) if isinstance(v, str) else v)}"
+                         for k, v in node.tool_inputs.items() if k != "assumptions")
         text += f"({args[:120]})"
     if res:
         text += f" = {res}"
     if deps:
         text += f" <- {','.join(deps)}"
     return text
+
+
+def _quantity_text(q: dict) -> str:
+    kind = f" ({q['kind']})" if q.get("kind") else ""
+    return f"{q.get('value')} {q.get('unit', '')}".rstrip() + kind
+
+
+def _givens(node: Node) -> str:
+    givens = (node.tool_inputs or {}).get("givens") or {}
+    if not givens:
+        return ""
+    return " | givens: " + ", ".join(f"{k}={_quantity_text(v)}" for k, v in givens.items())
 
 
 def build_digest(engine: "GraphEngine", budget_tokens: int, chars_per_token: float = 3.0) -> str:

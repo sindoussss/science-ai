@@ -64,7 +64,7 @@ class _TabRow(QWidget):
         b = self.owner.buttons[self.owner.currentIndex()] if self.owner.buttons else None
         if b is not None:
             r = self.owner.label_rect(self.owner.currentIndex())
-            p.fillRect(r.left(), self.height() - 2, r.width(), 2, t.c("accent"))
+            p.fillRect(r.left(), self.height() - 2, r.width(), 2, t.c("text"))
         p.end()
 
 

@@ -258,7 +258,7 @@ class Sidebar(QWidget):
         self.kb_rows = []
         for n in verified:
             value = prose_text(n.content) if n.type.value == "final" else value_text(n.display_result())
-            row = ListRow(t, "check", "status_verified", f"{n.title}: {value[:80]}", f"{n.title}\n{value}")
+            row = ListRow(t, "hollow", "text_faint", f"{n.title}: {value[:80]}", f"{n.title}\n{value}")
             row.clicked.connect(lambda s=n.session_id, i=n.id: self.open_node.emit(s, i))
             self.kb_box.addWidget(row)
             self.kb_rows.append(row)

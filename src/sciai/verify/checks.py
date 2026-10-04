@@ -4,6 +4,10 @@ Every plan uses a *different method* from the solver it checks (symbolic vs
 numeric, a different algorithm, or a known-value comparison). A plan's builder
 returns ``None`` when the result can't be fed to the checker (e.g. a Piecewise
 the parser doesn't accept); that plan is then not offered.
+
+``required`` plans always run (a quantity's dimensional and plausibility checks,
+every circuit check); ``must_pass`` ones also block verification when they come
+back inconclusive. Optional plans run cheapest-first until one passes, as in Phase 1.
 """
 from __future__ import annotations
 
@@ -15,10 +19,12 @@ Builder = Callable[[dict[str, Any], dict[str, Any]], "dict[str, Any] | None"]
 
 @dataclass(frozen=True)
 class CheckPlan:
-    method: str        # symbolic_vs_numeric | alt_algorithm | known_value | units
+    method: str        # symbolic_vs_numeric | alt_algorithm | known_value | units | dimensional | ...
     checker: str       # checker tool name
     build: Builder
     cost: int = 1
+    required: bool = False   # always runs, whatever else passes
+    must_pass: bool = False  # inconclusive blocks verification too
 
 
 def _val(result: dict[str, Any]) -> str | None:
@@ -104,7 +110,101 @@ def _convert(a: dict, r: dict) -> dict | None:
             "converted": float(r["value"])}
 
 
+# ------------------------------------------------------------------ physics
+def _plausibility(a: dict, r: dict) -> dict | None:
+    return {"result": r} if r.get("kind") == "quantity" and r.get("quantity_kind") else None
+
+
+def _phys_dims(a: dict, r: dict) -> dict | None:
+    if r.get("kind") != "quantity":
+        return None
+    out = {"expr": a["expr"], "values": a.get("values") or {}, "dims": r["dims"]}
+    for k in ("to_unit", "kind"):
+        if a.get(k):
+            out[k] = a[k]
+    return out
+
+
+def _phys_value(a: dict, r: dict) -> dict | None:
+    if r.get("kind") != "quantity":
+        return None
+    return {"expr": a["expr"], "values": a.get("values") or {}, "si_value": float(r["si_value"])}
+
+
+def _constant(a: dict, r: dict) -> dict | None:
+    if r.get("kind") != "quantity":
+        return None
+    return {"name": a["name"], "si_value": float(r["si_value"]), "dims": r["dims"]}
+
+
+def _ode_solution(a: dict, r: dict) -> dict | None:
+    v = _val(r)
+    if v is None:
+        return None
+    out = {"equation": a["equation"], "func": a["func"], "var": a["var"], "solution": v}
+    for k in ("ics", "t_span", "assumptions"):
+        if a.get(k):
+            out[k] = a[k]
+    return out
+
+
+def _ode_residual(a: dict, r: dict) -> dict | None:
+    return _ode_solution(a, r)
+
+
+def _ode_numeric(a: dict, r: dict) -> dict | None:
+    out = _ode_solution(a, r)
+    return out if out and a.get("ics") else None
+
+
+def _ivp(a: dict, r: dict) -> dict | None:
+    if r.get("kind") != "series":
+        return None
+    out = {k: a[k] for k in ("rhs", "funcs", "var", "y0", "t_span") if k in a}
+    if a.get("points"):
+        out["points"] = a["points"]
+    return {**out, "y": r["y"], "rtol_used": float(r.get("rtol", 1e-8))}
+
+
+def _linalg(a: dict, r: dict) -> dict | None:
+    if r.get("kind") != "list":
+        return None
+    sol = [_val(item) for item in r["value"]]
+    if any(v is None for v in sol):
+        return None
+    return {"A": a["A"], "b": a["b"], "solution": sol}
+
+
+def _circuit(a: dict, r: dict) -> dict | None:
+    if r.get("kind") != "list" or "solution" not in r:
+        return None
+    return {"netlist": a["netlist"], "solution": r["solution"]}
+
+
 PLANS: dict[str, list[CheckPlan]] = {
+    "phys.evaluate": [
+        CheckPlan("plausibility", "phys.check_plausibility", _plausibility, 0, required=True, must_pass=True),
+        CheckPlan("dimensional", "phys.check_dimensions", _phys_dims, 1, required=True, must_pass=True),
+        CheckPlan("alt_algorithm", "phys.check_value", _phys_value, 2),
+    ],
+    "phys.constant": [
+        CheckPlan("plausibility", "phys.check_plausibility", _plausibility, 0, required=True, must_pass=True),
+        CheckPlan("known_value", "phys.check_constant", _constant, 1, required=True, must_pass=True),
+    ],
+    "ode.dsolve": [
+        CheckPlan("residual", "ode.check_residual", _ode_residual, 2, required=True),
+        CheckPlan("symbolic_vs_numeric", "ode.check_numeric", _ode_numeric, 3, required=True),
+    ],
+    "ode.solve_ivp": [
+        CheckPlan("alt_algorithm", "ode.check_ivp", _ivp, 2, required=True),
+        CheckPlan("symbolic_vs_numeric", "ode.check_ivp_symbolic", _ivp, 3, required=True),
+    ],
+    "linalg.solve": [CheckPlan("residual", "linalg.check_residual", _linalg)],
+    "circuit.dc": [
+        CheckPlan("kirchhoff", "circuit.check_kirchhoff", _circuit, 1, required=True, must_pass=True),
+        CheckPlan("power_balance", "circuit.check_power", _circuit, 1, required=True, must_pass=True),
+        CheckPlan("series_parallel", "circuit.check_reduction", _circuit, 2, required=True),
+    ],
     "sympy.diff": [CheckPlan("symbolic_vs_numeric", "numeric.check_derivative", _diff)],
     "sympy.integrate": [CheckPlan("symbolic_vs_numeric", "numeric.check_antiderivative", _integrate, 2)],
     "sympy.solve": [CheckPlan("symbolic_vs_numeric", "numeric.check_solution", _solve)],

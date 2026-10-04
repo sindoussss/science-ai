@@ -43,6 +43,7 @@ class NodeType(StrEnum):
     HINT = "hint"
     ENTITY = "entity"
     PLOT = "plot"
+    ASSUMPTION = "assumption"  # a modelling assumption; never verified, confirmed by the user
 
 
 class EdgeKind(StrEnum):
@@ -135,7 +136,17 @@ def result_to_text(result: dict[str, Any]) -> str:
     value = result.get("value")
     units = result.get("units")
     if kind == "list":
-        text = ", ".join(result_to_text(v) for v in value)
+        labels = result.get("labels")
+        if labels and len(labels) == len(value):
+            text = ", ".join(f"{lbl} = {result_to_text(v)}" for lbl, v in zip(labels, value))
+        else:
+            text = ", ".join(result_to_text(v) for v in value)
+    elif kind == "quantity":
+        text = f"{float(value):.10g} {result.get('unit') or ''}".rstrip()
+    elif kind == "series":
+        t = result.get("t") or [0.0]
+        finals = ", ".join(f"{f} = {float(v):.10g}" for f, v in zip(result.get("funcs", []), value or []))
+        text = f"{finals} at {result.get('var', 't')} = {float(t[-1]):.10g}"
     elif kind == "plotspec":
         text = f"plot ({len(value.get('x', []))} points)"
     else:

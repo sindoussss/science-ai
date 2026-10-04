@@ -22,6 +22,8 @@ def _canon_value(key: str, value: Any, assumptions: dict[str, str] | None) -> An
 
 def canonicalize(tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
     spec = get(tool_name)
+    if spec.canonical is not None:
+        return spec.canonical(args)
     assumptions = args.get("assumptions") or None
     out: dict[str, Any] = {}
     for key, value in sorted(args.items()):

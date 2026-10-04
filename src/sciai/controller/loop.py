@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import threading
 from dataclasses import dataclass, field
 from typing import Any, Callable
@@ -17,11 +18,15 @@ import jsonschema
 from sciai.config import Config
 from sciai.controller import lookup
 from sciai.controller.answer import render
-from sciai.controller.provenance import unsourced
+from sciai.controller.provenance import numbers_in, unsourced
+from sciai.domains.physics import quantities as Q
+from sciai.domains.physics.assumptions import checklist, normalize_type
 from sciai.graph.digest import build_digest
 from sciai.graph.engine import GraphEngine, GraphRuleError
-from sciai.graph.fingerprint import normalize_question, question_fingerprint
+from sciai.graph.fingerprint import normalize_question, question_fingerprint, tool_fingerprint
 from sciai.graph.model import (
+    Domain,
+    EdgeKind,
     Evidence,
     LadderStage,
     Layer,
@@ -32,7 +37,7 @@ from sciai.graph.model import (
 )
 from sciai.llm.actions import Action, ActionError, check_answer_template, parse_action
 from sciai.llm.client import LLM, ContextOverflow, LLMUnavailable, estimate_tokens
-from sciai.llm.roles import ROLES
+from sciai.llm.roles import ROLES, retry_role
 from sciai.tools.registry import ToolSpec
 from sciai.tools.registry import get as get_tool
 from sciai.tools.sandbox import Runner
@@ -45,8 +50,11 @@ log = logging.getLogger(__name__)
 STEP_ACTIONS = ("call_tool", "run_check", "finish", "ask_user")
 PROMPT_MARGIN_TOKENS = 200
 
-# confirm_root returns True (accept), False (reject) or an edited statement.
-ConfirmRoot = Callable[[Node], "bool | str"]
+# confirm_root returns True (accept), False (reject), an edited statement, or a dict
+# {"statement": edited text or None, "rejected": [assumption texts the user unticked]}.
+ConfirmRoot = Callable[[Node], "bool | str | dict[str, Any]"]
+GIVEN_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,30}$")
+SYMBOL_ASSUMPTIONS = ("real", "positive", "negative", "nonnegative", "nonpositive", "integer", "nonzero")
 
 
 @dataclass
@@ -60,6 +68,7 @@ class TaskResult:
     conflict: list[str] = field(default_factory=list)
     question: str | None = None
     detail: str = ""
+    assumptions: list[str] = field(default_factory=list)  # confirmed modelling assumptions
 
 
 @dataclass
@@ -67,6 +76,15 @@ class StepOutcome:
     lines: list[str]
     result: TaskResult | None = None
     next_role: str = "controller"
+
+
+def _problem_sources(root: Node) -> dict[str, Any]:
+    """What a problem node vouches for: the question, symbol assumptions and the givens found in
+    the question. The goal is the model's own call and sources nothing by itself."""
+    inputs = root.tool_inputs or {}
+    bad = set(inputs.get("unsourced_givens") or [])
+    return {"question": inputs.get("question", ""), "assumptions": inputs.get("assumptions") or {},
+            "givens": {k: v for k, v in (inputs.get("givens") or {}).items() if k not in bad}}
 
 
 class StepError(RuntimeError):
@@ -81,7 +99,7 @@ class Controller:
         self.llm = llm
         self.cfg = cfg
         self.confirm_root = confirm_root
-        self.verifier = Verifier(engine, runner)
+        self.verifier = Verifier(engine, runner, plausibility=cfg.physics.plausibility)
         self.llm_calls = 0
         self._notes: list[str] = []
         self._notes_lock = threading.Lock()
@@ -151,18 +169,22 @@ class Controller:
         for dep in self.engine.dependencies(final.id):
             self.engine.link_existing(dep)
         return TaskResult("reused", answer=final.content, final_node=final.id, verified=True,
-                          detail="answered from a verified result in the knowledge store")
+                          detail="answered from a verified result in the knowledge store",
+                          assumptions=list((final.tool_inputs or {}).get("assumptions") or []))
 
     def _formalize(self, question: str) -> Node | TaskResult:
         role = ROLES["formalizer"]
+        givens: dict[str, dict[str, Any]] = {}
 
         def validate(a: Action) -> None:
             goal = a.get("goal")
             if goal:
                 self._validate_tool_call(goal.get("tool", ""), goal.get("args", {}), role.name)
             for name, kind in (a.get("assumptions") or {}).items():
-                if kind not in ("real", "positive", "negative", "nonnegative", "nonpositive", "integer", "nonzero"):
+                if kind not in SYMBOL_ASSUMPTIONS:
                     raise ActionError(f"assumption {kind!r} for {name!r} is not allowed")
+            givens.clear()
+            givens.update(self._normalize_givens(a.get("givens") or {}))
 
         user = f"QUESTION:\n{question}\n\nReply with one JSON formalize action."
         try:
@@ -177,23 +199,71 @@ class Controller:
             spec = get_tool(goal["tool"])
             if "assumptions" in spec.schema.get("properties", {}):
                 goal.setdefault("args", {}).setdefault("assumptions", assumptions)
+        problem_type = normalize_type(action.get("problem_type"))
+        items = checklist(problem_type, action.get("modelling_assumptions"))
+        # A given is a source for later tool calls only if its number is in the question.
+        in_question = numbers_in(question)
+        unsourced_givens = sorted(k for k, v in givens.items() if not numbers_in(v["value"]) <= in_question)
         root = Node(
             session_id="", layer=Layer.REASONING, type=NodeType.PROBLEM, title="Problem",
             content=action["statement"], content_canonical=normalize_question(question),
             fingerprint=question_fingerprint(question),
-            tool_inputs={"question": question, "assumptions": assumptions, "goal": goal},
+            tool_inputs={"question": question, "assumptions": assumptions, "goal": goal,
+                         "problem_type": problem_type, "givens": givens, "checklist": items,
+                         "unsourced_givens": unsourced_givens},
             role=role.name,
+            flags=[f"unsourced_givens: {', '.join(unsourced_givens)}"] if unsourced_givens else [],
         )
         self.engine.add_node(root)
+        rejected: set[str] = set()
         if not self.cfg.controller.auto_confirm_root and self.confirm_root is not None:
             verdict = self.confirm_root(root)
             if verdict is False:
                 return TaskResult("rejected", detail="the formalized problem was not confirmed")
-            if isinstance(verdict, str) and verdict.strip() and verdict.strip() != root.content:
-                root.content = verdict.strip()
+            statement = verdict.get("statement") if isinstance(verdict, dict) else verdict
+            if isinstance(verdict, dict):
+                rejected = {str(t) for t in verdict.get("rejected") or []}
+            if isinstance(statement, str) and statement.strip() and statement.strip() != root.content:
+                root.content = statement.strip()
                 root.tool_inputs = {**(root.tool_inputs or {}), "goal": None, "edited_by_user": True}
                 self.engine.update(root)
+        self._create_assumptions(root, items, rejected)
         return root
+
+    @staticmethod
+    def _normalize_givens(raw: dict[str, Any]) -> dict[str, dict[str, Any]]:
+        out: dict[str, dict[str, Any]] = {}
+        for name, obj in raw.items():
+            if not GIVEN_NAME.match(name):
+                raise ActionError(f"given name {name!r} must be a plain identifier like v0 or R1")
+            try:
+                Q.from_object(obj)
+            except Q.QuantityError as exc:
+                raise ActionError(f"given {name}: {exc}") from None
+            out[name] = {"value": obj["value"], "unit": obj["unit"], **({"kind": obj["kind"]} if obj.get("kind") else {})}
+        return out
+
+    def _create_assumptions(self, root: Node, items: list[dict[str, Any]], rejected: set[str]) -> None:
+        """Confirmed items become locked assumption nodes the problem depends on, so rejecting one
+        later invalidates everything built on it. Unticked items are recorded as failed and unlinked."""
+        domain = Domain.PHYSICS if (root.tool_inputs or {}).get("problem_type") else Domain.GENERAL
+        confirmed: list[str] = []
+        for item in items:
+            ok = item["text"] not in rejected
+            node = Node(session_id="", layer=Layer.REASONING, type=NodeType.ASSUMPTION, title=item["text"][:80],
+                        content=item["text"], tool_inputs={"source": item["source"]},
+                        status=Status.PROPOSED if ok else Status.FAILED, locked=ok, role="user")
+            self.engine.add_node(node, tool_domain=domain)
+            if ok:
+                self.engine.add_edge(root.id, node.id, EdgeKind.DEPENDS_ON)
+                confirmed.append(node.id)
+        if items:
+            root.tool_inputs = {**(root.tool_inputs or {}), "assumption_nodes": confirmed}
+            self.engine.update(root)
+
+    def _confirmed_assumptions(self, root: Node) -> list[str]:
+        ids = (self.engine.resolve(root.id).tool_inputs or {}).get("assumption_nodes") or []
+        return [self.engine.resolve(i).content for i in ids if self.engine.resolve(i).status not in TERMINAL_BAD]
 
     def _try_goal(self, root: Node, goal: dict[str, Any]) -> tuple[TaskResult | None, str]:
         """If the formalized goal is one tool call, reuse or run it without asking the model."""
@@ -318,7 +388,11 @@ class Controller:
 
     def _validate_step(self, a: Action, role: str) -> None:
         if a.kind == "call_tool":
-            self._validate_tool_call(a["tool"], a["args"], role)
+            spec = self._validate_tool_call(a["tool"], a["args"], role)
+            if spec.node_arg is not None:
+                node = self._resolve_handle(str(a["args"].get(spec.node_arg, "")))
+                if node.status in TERMINAL_BAD:
+                    raise ActionError(f"{a['args'][spec.node_arg]} is {node.status.value}")
             for ref in a.get("depends_on") or []:
                 node = self._resolve_handle(ref)
                 if node.status in TERMINAL_BAD:
@@ -373,7 +447,17 @@ class Controller:
         if root_assumptions and "assumptions" in spec.schema.get("properties", {}):
             args.setdefault("assumptions", root_assumptions)
 
-        fp, err = lookup.canonical_fingerprint(self.runner, tool, args)
+        run_args = args
+        if spec.node_arg is not None:
+            # the handle becomes the node's id (handles are per session) and its result is the data
+            ref = self.engine.resolve(str(args.get(spec.node_arg, "")))
+            if ref.status in TERMINAL_BAD:
+                raise StepError(f"{self.engine.handle(ref.id)} is {ref.status.value}")
+            args[spec.node_arg] = ref.id
+            deps = list(dict.fromkeys([*deps, ref.id]))
+            run_args = {**args, "data": ref.result}
+
+        fp, err = lookup.canonical_fingerprint(self.runner, tool, run_args)
         if fp is None:
             raise StepError(err or "could not parse the arguments")
 
@@ -389,14 +473,18 @@ class Controller:
                 return StepOutcome([f"Reused verified result {handle} = {hit.display_result()}"])
         hint = lookup.hint_by_fingerprint(self.engine.repo, fp)
 
-        sources: list[Any] = [root.content, root.tool_inputs]
+        sources: list[Any] = [root.content, _problem_sources(root)]
         for d in deps:
             for nid in [d, *self.engine.ancestors(d)]:
                 n = self.engine.resolve(nid)
-                sources += [n.content if n.type == NodeType.PROBLEM else "", n.tool_inputs, n.result]
-        missing = unsourced(args, sources, self.cfg.risk.structural_int_max)
+                if n.type == NodeType.PROBLEM:
+                    sources += [n.content, _problem_sources(n)]
+                else:
+                    sources += [n.content if n.type == NodeType.ASSUMPTION else "", n.tool_inputs, n.result]
+        scanned = {k: v for k, v in args.items() if k != spec.node_arg}  # a node id is not a number
+        missing = unsourced(scanned, sources, self.cfg.risk.structural_int_max)
 
-        outcome = self.runner.run(tool, args, self.cfg.tools.timeout)
+        outcome = self.runner.run(tool, run_args, self.cfg.tools.timeout)
         run_id = self.engine.repo.log_tool_run(self.engine.session_id or "", None, tool, args,
                                                outcome.value if outcome.ok else None, outcome.error,
                                                outcome.duration_ms)
@@ -406,6 +494,9 @@ class Controller:
             self.engine.repo.attach_run(run_id, err_node.id)
             raise StepError(outcome.error or "tool failed")
 
+        entity = self._entity_for(root, spec, args)
+        if entity is not None:
+            deps = [*deps, entity.id]
         node = Node(
             session_id="", layer=Layer.PLOT if outcome.value["result"].get("kind") == "plotspec" else Layer.REASONING,
             type=NodeType.PLOT if outcome.value["result"].get("kind") == "plotspec" else NodeType.TOOL_RESULT,
@@ -437,6 +528,27 @@ class Controller:
         next_role = step.next_role if step.next_role != "controller" else sweep.next_role
         return StepOutcome(lines, sweep.result, next_role)
 
+    def _entity_for(self, root: Node, spec: ToolSpec, args: dict[str, Any]) -> Node | None:
+        """The domain entity a tool argument holds (a circuit netlist), as one node per distinct
+        entity in the session. Results depend on it, so a new version of it cascades to them."""
+        if spec.entity_arg is None or spec.entity_arg not in args:
+            return None
+        value = args[spec.entity_arg]
+        out = self.runner.canonicalize(spec.name, {spec.entity_arg: value})
+        if not out.ok:
+            return None
+        fp = tool_fingerprint(f"entity.{spec.entity_arg}", out.value["canonical"].get(spec.entity_arg))
+        for n in self.engine.nodes.values():
+            if (n.type == NodeType.ENTITY and n.fingerprint == fp and n.session_id == self.engine.session_id
+                    and n.status not in TERMINAL_BAD):
+                return n
+        describe = spec.describe_entity or (lambda v: json.dumps(v, sort_keys=True))
+        entity = Node(session_id="", layer=Layer.DOMAIN, type=NodeType.ENTITY, title=spec.entity_arg,
+                      content=describe(value), content_canonical=fp, fingerprint=fp,
+                      tool_inputs={"arg": spec.entity_arg, "value": value}, role="controller")
+        self.engine.add_node(entity, [root.id], tool_domain=spec.domain)
+        return entity
+
     # ----------------------------------------------------------- verification
     def _assess_and_check(self, node: Node, user_facing: bool, extra_dependents: int = 0,
                           auto: bool = False) -> StepOutcome:
@@ -445,7 +557,7 @@ class Controller:
         node = self.engine.resolve(node.id)
         spec = get_tool(node.tool_name) if node.tool_name else None
         report = assess(self.engine, node, spec, self.cfg.risk, user_facing=user_facing,
-                        extra_dependents=extra_dependents)
+                        extra_dependents=extra_dependents, plausibility=self.cfg.physics.plausibility)
         node.risk = {**node.risk, "fired": report.fired}
         self.engine.update(node)
         h = self.engine.handle(node.id)
@@ -457,11 +569,13 @@ class Controller:
             node.risk["unverifiable"] = True
             self.engine.update(node)
             return StepOutcome([f"{h} is risky ({rules}) but no independent check exists; it stays unverified."])
-        if len(plans) > 1 and not (user_facing or auto):
-            node.risk["pending_checks"] = [p.method for p, _ in plans]
+        # Required checks always run, so the model only chooses among the optional ones.
+        optional = [p for p, _ in plans if not p.required]
+        if len(optional) > 1 and not (user_facing or auto):
+            node.risk["pending_checks"] = [p.method for p in optional]
             self.engine.update(node)
             return StepOutcome([f"{h} needs a check ({rules}). Offered checks: "
-                                f"{', '.join(p.method for p, _ in plans)}. Choose one with run_check."])
+                                f"{', '.join(p.method for p in optional)}. Choose one with run_check."])
         outcome = self.verifier.verify(node)
         return self._after_verify(self.engine.resolve(node.id), outcome, rules)
 
@@ -483,7 +597,7 @@ class Controller:
             detail = f" Check said: {json.dumps(d, default=str)[:300]}"
         next_role = "controller"
         if decision.stage == LadderStage.RETRIED and node.tool_name:
-            next_role = "algebra" if node.tool_name.startswith("sympy.") else "numeric"
+            next_role = retry_role(node.tool_name)
         return StepOutcome([decision.message + detail], next_role=next_role)
 
     def _stakes_sweep(self, new_node: Node) -> StepOutcome:
@@ -530,9 +644,11 @@ class Controller:
     def _finalize(self, root: Node, template: str, handles: list[str]) -> TaskResult:
         nodes = [self.engine.resolve(h) for h in handles]
         all_verified = all(n.status == Status.VERIFIED for n in nodes)
+        assumed = self._confirmed_assumptions(root)
         final = Node(session_id="", layer=Layer.REASONING, type=NodeType.FINAL, title="Answer",
                      content=render(self.engine, template),
-                     tool_inputs={"template": template, "answer_nodes": [n.id for n in nodes]})
+                     tool_inputs={"template": template, "answer_nodes": [n.id for n in nodes],
+                                  "assumptions": assumed})
         if not all_verified:
             final.flags = ["unverified inputs"]
         dep_ids = list(dict.fromkeys([n.id for n in nodes] + [root.id]))
@@ -543,7 +659,8 @@ class Controller:
                 inputs={"template": template}, outcome="pass",
                 detail={"answer_nodes": [n.id for n in nodes]}))
             self.engine.set_status(final.id, Status.VERIFIED, "all answer values verified")
-        return TaskResult("answered", answer=final.content, final_node=final.id, verified=all_verified)
+        return TaskResult("answered", answer=final.content, final_node=final.id, verified=all_verified,
+                          assumptions=assumed)
 
     def _error_node(self, title: str, message: str, deps: list[str], tool: str | None = None,
                     args: dict[str, Any] | None = None) -> Node:

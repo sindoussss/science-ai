@@ -179,41 +179,87 @@ def test_column_holds_at_the_narrowest_chat(fault_window):
 
 
 # 5. Chips -----------------------------------------------------------------------------------------
-CHIPS = {"verified": ("#E6F3EA", "#1D6B3A"), "failed": ("#FBEAE8", "#B4281C"),
-         "proposed": ("#FBF0DC", "#9A5B0B"), "invalidated": ("#F1F0EC", "#6B6A63"),
-         "hypothesis": ("#EEE9FB", "#5B3FB5")}
+# Yeri, 2026-10-04: no emoji and no color in borders. Status is a plain word in a neutral outlined chip.
+def _sat(hex_: str) -> float:
+    """Chroma (max - min channel, 0..1): HSV saturation calls a warm near-black "colorful"."""
+    c = QColor(hex_)
+    return (max(c.red(), c.green(), c.blue()) - min(c.red(), c.green(), c.blue())) / 255
 
 
-def test_chips_are_pale_warm_fills_with_dark_text():
-    from sciai.ui.chips import chip_size, paint_chip
-    from sciai.ui.theme.theme import Theme
+def test_chips_are_neutral_outlines_with_plain_words():
+    from PyQt6.QtGui import QImage, QPainter
+
+    from sciai.ui.chips import chip_label, chip_size, paint_chip
+    from sciai.ui.theme.theme import STATUSES, Theme
 
     setup_app()
+    for name in ("light", "dark"):
+        t = Theme.load(name)
+        for status in STATUSES:
+            assert _sat(t.hex(f"status_{status}")) < 0.1, (name, status)
+            assert _sat(t.hex(f"status_{status}_bg")) < 0.1, (name, status)
     t = Theme.load("light")
     assert t.radius("chip") == 6
     assert QFontInfo(t.chip_font()).pixelSize() == 12
-    for status, (bg, fg) in CHIPS.items():
-        assert t.hex(f"status_{status}_bg").upper() == bg
-        assert t.hex(f"status_{status}").upper() == fg
-        h, s, v = colorsys.rgb_to_hsv(*(c / 255 for c in QColor(bg).getRgb()[:3]))
-        assert s < 0.15 and v > 0.9, status  # pale: no saturated blocks
+    for status in STATUSES:
+        assert chip_label(status) == status  # the word only, no symbol
         css = t.chip_css(status)
         assert "border-radius:6px" in css and "padding:2px 8px" in css and "font-size:12px" in css
-        assert ("dashed" in css) == (status == "invalidated")
-    w, h = chip_size(t, "✓ verified")
+        assert f"background:{t.hex('panel')}" in css
+        if status == "invalidated":
+            assert f"1px dashed {t.hex('border_strong')}" in css
+        else:
+            assert f"1px solid {t.hex('border')}" in css
+    w, h = chip_size(t, "verified")
     fm = QFontMetricsF(t.chip_font())
-    assert (w, h) == (fm.horizontalAdvance("✓ verified") + 16, fm.height() + 4)
-    # what is painted: fill and a dashed border for invalidated
-    from PyQt6.QtGui import QImage, QPainter
-
+    assert (w, h) == (fm.horizontalAdvance("verified") + 16, fm.height() + 4)
+    # what is painted: panel fill inside a gray outline
     img = QImage(200, 40, QImage.Format.Format_ARGB32)
     img.fill(QColor("#FFFFFF"))
     p = QPainter(img)
-    r = paint_chip(p, t, 10, 20, "failed", "x failed")
+    r = paint_chip(p, t, 10, 20, "failed", "failed")
     p.end()
-    assert _close(img.pixelColor(int(r.left()) + 3, int(r.center().y())), CHIPS["failed"][0], tol=2)
+    assert _close(img.pixelColor(int(r.left()) + 3, int(r.center().y())), t.hex("panel"), tol=2)
+    edge = img.pixelColor(int(r.center().x()), int(r.top()))
+    assert _sat(edge.name()) < 0.1 and edge.name().upper() != "#FFFFFF"
     stakes = t.qss().split("#ruleChip", 1)[1].split("}", 1)[0]
-    assert CHIPS["proposed"][0].lower() in stakes.lower() and CHIPS["proposed"][1].lower() in stakes.lower()
+    assert t.hex("panel").lower() in stakes.lower() and t.hex("border").lower() in stakes.lower()
+
+
+def test_no_colored_borders_in_the_stylesheet():
+    """Every border, outline and focus ring is gray. The one filled button (Download script) is
+    excepted: its border is the same color as its fill, so it draws no colored outline."""
+    import re
+
+    from sciai.ui.theme.theme import Theme
+
+    setup_app()
+    for name in ("light", "dark"):
+        t = Theme.load(name)
+        rules = [r for r in t.qss().split("}") if "#primary" not in r]
+        for rule in rules:
+            for decl in re.findall(r"border[\w-]*\s*:[^;]*", rule):
+                for color in re.findall(r"#[0-9A-Fa-f]{6}\b", decl):
+                    assert _sat(color) < 0.1, (name, decl.strip())
+        for key in ("border", "border_strong", "selection", "edge_conflict", "pin", "warning"):
+            assert _sat(t.hex(key)) < 0.1, (name, key)
+
+
+def test_no_emoji_or_symbol_glyphs_in_the_ui():
+    """Status, warnings and disclosure arrows are words or drawn icons, never glyphs."""
+    import pathlib
+
+    import sciai.ui
+
+    banned = [(0x2190, 0x21FF), (0x2300, 0x23FF), (0x2460, 0x24FF), (0x25A0, 0x25FF), (0x2600, 0x27BF),
+              (0x2900, 0x297F), (0x2B00, 0x2BFF), (0xFE00, 0xFE0F), (0x1F000, 0x1FAFF), (0x2295, 0x22A1)]
+    found = []
+    for path in pathlib.Path(sciai.ui.__file__).parent.rglob("*.py"):
+        for i, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            for ch in line:
+                if any(a <= ord(ch) <= b for a, b in banned):
+                    found.append(f"{path.name}:{i} {ch!r}")
+    assert not found, found
 
 
 # 6. Composer --------------------------------------------------------------------------------------

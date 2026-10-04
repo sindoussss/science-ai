@@ -18,9 +18,16 @@ METHOD_LABEL = {
     "alt_algorithm": "Different algorithm",
     "known_value": "Known value",
     "units": "Unit check",
+    "dimensional": "Dimensional analysis",
+    "plausibility": "Physical range",
+    "residual": "Residual",
+    "kirchhoff": "Kirchhoff and Ohm's law",
+    "power_balance": "Power balance",
+    "series_parallel": "Series/parallel reduction",
     "inputs_verified": "All answer values verified",
 }
-RULE_LABEL = {"stakes": "Stakes", "surprise": "Surprise", "confidence": "Confidence", "step_type": "Step type"}
+RULE_LABEL = {"stakes": "Stakes", "surprise": "Surprise", "confidence": "Confidence", "step_type": "Step type",
+              "units": "Units"}
 
 
 def _short(v: Any, n: int = 18) -> str:
@@ -40,6 +47,23 @@ def summarize(ev: Evidence) -> str:
         return f"Every value in the answer comes from a verified node ({n})."
     if d.get("error"):
         return f"Check could not run: {d['error']}"
+    if ev.method == "dimensional" and "derived" in d and ev.outcome == "pass":
+        dims = d["derived"] or {}
+        shown = " ".join(f"{k.strip('[]')}^{v:g}" if v != 1 else k.strip("[]") for k, v in dims.items())
+        return f"Units are consistent: the formula gives {shown or 'a dimensionless value'}."
+    if ev.method == "known_value" and "pint_value" in d:
+        return (f"CODATA {d.get('codata')} via SciPy {d.get('scipy')} matches pint ({d['pint_value']}) "
+                f"within {d.get('tolerance', 0):.0e}.")
+    if "sources_deliver_W" in d:
+        return (f"Sources deliver {_short(d['sources_deliver_W'])} W; resistors dissipate "
+                f"{_short(d.get('resistors_dissipate_W'))} W.")
+    if "equivalent_resistance" in d and ev.outcome == "pass":
+        return f"Reduces to {_short(d['equivalent_resistance'])} ohm; every current agrees."
+    if "max_error" in d and ev.outcome != "inconclusive":
+        how = f"{d['method']} rerun" if d.get("method") else "closed form"
+        return f"{how} differs by at most {_short(d['max_error'])}."
+    if "reference_si" in d:
+        return f"30-digit SI reference {_short(d['reference_si'])} vs result {_short(d.get('claimed_si'))}."
     if d.get("mismatches"):
         m = d["mismatches"][0]
         where = m.get("x", m.get("point", m.get("interval")))
@@ -93,13 +117,13 @@ class LadderStepper(QWidget):
         y = 16
         for i in range(2):
             done = i < current
-            p.setPen(QPen(t.c("accent") if done else t.c("border"), 2))
+            p.setPen(QPen(t.c("text_secondary") if done else t.c("border"), 1.5))
             p.drawLine(int(xs[i] + 12), y, int(xs[i + 1] - 12), y)
         for i, (key, label) in enumerate(LADDER):
             if i < current:
-                fill, ring, txt = t.c("accent_soft"), t.c("accent"), t.c("accent")
+                fill, ring, txt = t.c("panel"), t.c("text_secondary"), t.c("text_secondary")
             elif i == current:
-                fill, ring, txt = t.c("accent"), t.c("accent"), t.c("accent_text")
+                fill, ring, txt = t.c("text"), t.c("text"), t.c("panel")
             else:
                 fill, ring, txt = t.c("panel"), t.c("border_strong"), t.c("text_faint")
             p.setPen(QPen(ring, 1.5))
@@ -108,7 +132,7 @@ class LadderStepper(QWidget):
             p.setPen(txt)
             p.setFont(t.ui_font("size_small_px", bold=True))
             p.drawText(QRectF(xs[i] - 11, y - 11, 22, 22), Qt.AlignmentFlag.AlignCenter,
-                       "✓" if i < current else str(i + 1))
+                       str(i + 1))
             p.setPen(t.c("text") if i == current else t.c("text_muted"))
             p.setFont(t.ui_font("size_small_px", bold=i == current))
             p.drawText(QRectF(xs[i] - 60, y + 15, 120, 18), Qt.AlignmentFlag.AlignCenter, label)
@@ -126,7 +150,7 @@ class EvidenceCard(QFrame):
         title = QLabel(METHOD_LABEL.get(ev.method, ev.method.replace("_", " ").capitalize()))
         title.setStyleSheet("font-weight:600;")
         status = {"pass": "verified", "fail": "failed"}.get(ev.outcome, "inconclusive")
-        badge = QLabel({"pass": "✓ pass", "fail": "✕ fail"}.get(ev.outcome, "– inconclusive"))
+        badge = QLabel({"pass": "pass", "fail": "fail"}.get(ev.outcome, "inconclusive"))
         badge.setStyleSheet(theme.chip_css(status))
         head.addWidget(title)
         head.addStretch(1)

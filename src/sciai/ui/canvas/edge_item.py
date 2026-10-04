@@ -30,14 +30,16 @@ class EdgeItem(QGraphicsItem):
         self.setZValue(0)
 
     def set_ends(self, a: QPointF, b: QPointF, vertical: bool = False) -> None:
+        """Vertical: down from a to b. Otherwise sideways, bulging out of a and into b in the
+        direction of travel (an assumption's right edge into the problem's left edge)."""
         self.prepareGeometryChange()
         path = QPainterPath(a)
         if vertical:
             dy = max(12.0, abs(b.y() - a.y()) * 0.5) * (1 if b.y() >= a.y() else -1)
             c1, c2 = QPointF(a.x(), a.y() + dy), QPointF(b.x(), b.y() - dy)
         else:
-            dx = max(24.0, abs(b.x() - a.x()) * 0.45)
-            c1, c2 = QPointF(a.x() - dx, a.y()), QPointF(b.x() + dx, b.y())
+            dx = max(24.0, abs(b.x() - a.x()) * 0.45) * (1 if b.x() >= a.x() else -1)
+            c1, c2 = QPointF(a.x() + dx, a.y()), QPointF(b.x() - dx, b.y())
         # stop the stroke at the arrow's base so the tip stays crisp
         ang = math.atan2(b.y() - c2.y(), b.x() - c2.x())
         base = QPointF(b.x() - math.cos(ang) * ARROW, b.y() - math.sin(ang) * ARROW)

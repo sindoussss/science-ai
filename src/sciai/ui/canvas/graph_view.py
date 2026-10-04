@@ -165,10 +165,17 @@ class GraphView(QGraphicsView):
             if a is None or b is None or kind == EdgeKind.CHECKS:
                 continue  # a check pill sits directly under its target; no connector needed
             e = EdgeItem(kind, self.theme)
-            # src depends on dst: the arrow runs down from dst (the dependency) into src
-            top = QPointF(b.pos().x() + b.size()[0] / 2, bottom[dst] + 2)
-            end = QPointF(a.pos().x() + a.size()[0] / 2, a.pos().y() - 1)
-            e.set_ends(top, end, vertical=True)
+            if b.node.type == NodeType.ASSUMPTION:
+                # assumptions stand in a column to the left: right edge into the problem's left edge
+                bw, bh = b.size()
+                start = QPointF(b.pos().x() + bw + 1, b.pos().y() + bh / 2)
+                end = QPointF(a.pos().x() - 1, a.pos().y() + a.size()[1] / 2)
+                e.set_ends(start, end)
+            else:
+                # src depends on dst: the arrow runs down from dst (the dependency) into src
+                top = QPointF(b.pos().x() + b.size()[0] / 2, bottom[dst] + 2)
+                end = QPointF(a.pos().x() + a.size()[0] / 2, a.pos().y() - 1)
+                e.set_ends(top, end, vertical=True)
             self.scene_.addItem(e)
             self.edge_items.append((e, src, dst))
         self._apply_dim()

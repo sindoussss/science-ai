@@ -60,7 +60,10 @@ class ParseError(ValueError):
     pass
 
 
-def _check_tokens(text: str) -> None:
+MAX_DERIVATIVE_ORDER = 4
+
+
+def _check_tokens(text: str, functions: frozenset[str] = frozenset()) -> None:
     if len(text) > MAX_LEN:
         raise ParseError(f"expression longer than {MAX_LEN} characters")
     if not text.strip():
@@ -76,13 +79,14 @@ def _check_tokens(text: str) -> None:
         prev = toks[i - 1] if i > 0 else None
         if tok.type == tokenize.NAME:
             name = tok.string
+            callable_ = name in FUNCTIONS or name in functions
             if keyword.iskeyword(name) or not _NAME_RE.match(name) or (
-                    name in _PY_BUILTINS and name not in FUNCTIONS):
+                    name in _PY_BUILTINS and not callable_):
                 raise ParseError(f"name {name!r} is not allowed")
             followed_by_call = nxt is not None and nxt.string == "("
-            if followed_by_call and name not in FUNCTIONS:
+            if followed_by_call and not callable_:
                 raise ParseError(f"unknown function {name!r}; use * for multiplication")
-            if not followed_by_call and name in FUNCTIONS:
+            if not followed_by_call and callable_:
                 raise ParseError(f"{name!r} is a function and must be called, e.g. {name}(x)")
         elif tok.type == tokenize.NUMBER:
             if not _NUMBER_RE.match(tok.string):
@@ -113,18 +117,49 @@ def make_symbol(name: str, assumptions: dict[str, str] | None = None) -> sp.Symb
     return sp.Symbol(name, **{kind: True})
 
 
-def parse(text: str, assumptions: dict[str, str] | None = None) -> sp.Expr:
+def _function_names(functions: tuple[str, ...] | list[str]) -> frozenset[str]:
+    """Unknown functions an ODE declares (y in y(t)); with any declared, Derivative is allowed too."""
+    names = set()
+    for f in functions:
+        make_symbol(f)  # same naming rules as a variable
+        names.add(f)
+    return frozenset(names | {"Derivative"}) if names else frozenset()
+
+
+def parse(text: str, assumptions: dict[str, str] | None = None,
+          functions: tuple[str, ...] | list[str] = ()) -> sp.Expr:
+    """``functions`` declares unknown functions for ODE input, e.g. ("y",) allows y(t) and
+    Derivative(y(t), t); nothing else becomes callable."""
     if not isinstance(text, str):
         text = str(text)
-    _check_tokens(text)
+    names = _function_names(functions)
+    _check_tokens(text, names)
     # Parse unevaluated first so size bombs (9**9**9, factorial(10**6)) are
     # rejected before SymPy tries to compute them.
-    _guard_size(_parse_raw(text, assumptions, evaluate=False))
-    return _parse_raw(text, assumptions, evaluate=True)
+    raw = _parse_raw(text, assumptions, evaluate=False, functions=names)
+    _guard_size(raw)
+    _guard_derivatives(raw)
+    return _parse_raw(text, assumptions, evaluate=True, functions=names)
 
 
-def _parse_raw(text: str, assumptions: dict[str, str] | None, evaluate: bool) -> sp.Basic:
+def _guard_derivatives(expr: sp.Basic) -> None:
+    for node in sp.preorder_traversal(expr):
+        if isinstance(node, sp.Derivative):
+            if not isinstance(node.expr, sp.core.function.AppliedUndef):
+                raise ParseError("Derivative must be of a declared function, e.g. Derivative(y(t), t)")
+            if any(not isinstance(v, sp.Symbol) for v, _ in node.variable_count):
+                raise ParseError("Derivative variables must be plain symbols")
+            if not all(isinstance(c, (int, sp.Integer)) for _, c in node.variable_count):
+                raise ParseError("Derivative order must be a whole number")
+            if node.derivative_count > MAX_DERIVATIVE_ORDER:
+                raise ParseError(f"derivative order above {MAX_DERIVATIVE_ORDER} is not supported")
+
+
+def _parse_raw(text: str, assumptions: dict[str, str] | None, evaluate: bool,
+               functions: frozenset[str] = frozenset()) -> sp.Basic:
     local: dict[str, Any] = {**FUNCTIONS, **CONSTANTS}
+    for name in functions:
+        local[name] = sp.Derivative if name == "Derivative" else sp.Function(name)
     for name in (assumptions or {}):
         local[name] = make_symbol(name, assumptions)
     try:
@@ -195,16 +230,17 @@ def _guard_size(expr: sp.Basic) -> None:
                 raise ParseError("factorial argument is too large")
 
 
-def parse_relation(text: str, assumptions: dict[str, str] | None = None) -> sp.Basic:
+def parse_relation(text: str, assumptions: dict[str, str] | None = None,
+                   functions: tuple[str, ...] | list[str] = ()) -> sp.Basic:
     """Parse "lhs = rhs" (or "lhs == rhs") into Eq; a bare expression means expr = 0."""
     if any(op in text for op in ("<=", ">=", "!=")):
         raise ParseError("inequalities are not supported here")
     parts = re.split(r"==|=", text)
     if len(parts) == 1:
-        return sp.Eq(parse(text, assumptions), 0)
+        return sp.Eq(parse(text, assumptions, functions), 0)
     if len(parts) != 2:
         raise ParseError("expected exactly one '='")
-    return sp.Eq(parse(parts[0], assumptions), parse(parts[1], assumptions))
+    return sp.Eq(parse(parts[0], assumptions, functions), parse(parts[1], assumptions, functions))
 
 
 def var(name: str, assumptions: dict[str, str] | None = None) -> sp.Symbol:
