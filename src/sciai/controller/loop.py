@@ -492,7 +492,7 @@ class Controller:
                 raise StepError(f"{self.engine.handle(ref.id)} is {ref.status.value}")
             args[spec.node_arg] = ref.id
             deps = list(dict.fromkeys([*deps, ref.id]))
-            run_args = {**args, "data": ref.result}
+            run_args = {**run_args, spec.node_arg: ref.id, "data": ref.result}
 
         fp, err = lookup.canonical_fingerprint(self.runner, tool, run_args)
         if fp is None:
@@ -559,6 +559,7 @@ class Controller:
             self._diagnostic_assumptions(node)
         h = self.engine.handle(node.id)
         lines = [f"{h} = {node.display_result()}"]
+        lines += self._alternative_offer(node)
         if missing:
             lines.append(f"{h} uses numbers not found in the problem or its inputs ({', '.join(missing)}); "
                          "it will be checked.")
@@ -825,6 +826,22 @@ class Controller:
                      locked=True, role="verifier", flags=[f"doubtful: {d.get('note', '')}"] if doubtful else [])
             self.engine.add_node(a, tool_domain=Domain.DATA)
             self.engine.add_edge(node.id, a.id, EdgeKind.DEPENDS_ON)
+
+    def _alternative_offer(self, node: Node) -> list[str]:
+        """A doubtful assumption does not block the answer; the model is told the robust
+        alternative so it can run that test as well."""
+        r = node.result or {}
+        bad = [d for d in r.get("diagnostics") or [] if d.get("ok") is False]
+        if r.get("kind") != "stats" or not bad:
+            return []
+        h = self.engine.handle(node.id)
+        what = "; ".join(f"{d['label']} is doubtful ({d.get('note', '')})" for d in bad)
+        alternative = {"welch_t": "stats.mannwhitney", "student_t": "stats.ttest with equal_var false, or "
+                       "stats.mannwhitney", "paired_t": "a sign-flip permutation is its check; report it with "
+                       "the caution", "one_sample_t": "report it with the caution", "anova": "stats.kruskal",
+                       "pearson": "stats.correlation with method spearman",
+                       "chi2": "combine sparse levels with data.derive or data.filter"}.get(r.get("test"))
+        return [f"For {h}: {what}." + (f" The alternative is {alternative}." if alternative else "")]
 
     def _test_assumptions(self, nodes: list[Node]) -> tuple[list[str], list[str]]:
         """(assumption texts, doubtful ones) behind the answer's tests."""

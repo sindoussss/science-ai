@@ -118,6 +118,17 @@ def test_anova_matches_r_plant_growth(data):
         assert check(name, data["plants"], a, r)["outcome"] == "pass", name
 
 
+def test_kruskal_matches_r_plant_growth(data):
+    a = {"column": "weight", "by": "group"}
+    r = run("stats.kruskal", dataset=data["plants"], **a)
+    assert r["statistic"]["value"] == pytest.approx(7.9882, abs=1e-4)
+    assert r["df"] == 2 and r["p"] == pytest.approx(0.01842, abs=1e-5)
+    assert check("stats.check_formula", data["plants"], a, r)["outcome"] == "pass"
+    assert check("stats.check_permutation", data["plants"], a, r)["outcome"] == "pass"
+    bad = _corrupt(r, ("statistic", "value"), 6.5)
+    assert check("stats.check_formula", data["plants"], a, bad)["outcome"] == "fail"
+
+
 def test_mann_whitney_exact_distribution():
     assert S._mw_counts(2, 2) == [1, 1, 2, 1, 1]
     assert sum(S._mw_counts(4, 6)) == math.comb(10, 4)

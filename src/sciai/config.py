@@ -51,6 +51,7 @@ class PhysicsConfig:
 class DataConfig:
     alpha: float = 0.05            # significance level when the question gives none
     max_rows: int = 5_000_000      # a larger file is refused at import instead of exhausting memory
+    max_file_mb: int = 400         # the tool sandbox has 3 GB; pandas needs several times the file size
     data_dir: str = "~/.sciai/datasets"  # imported files, stored by their SHA-256
 
     @property

@@ -575,6 +575,46 @@ register(ToolSpec(
 ))
 
 
+# ================================================================== stats.kruskal
+def _epsilon_h(*groups: Any) -> float:
+    """Rank-based effect size for Kruskal-Wallis: (H - k + 1) / (n - k)."""
+    from scipy.stats import kruskal
+
+    n, k = sum(len(g) for g in groups), len(groups)
+    try:
+        h = float(kruskal(*groups).statistic)
+    except ValueError:  # every value equal in a resample
+        return math.nan
+    return (h - k + 1) / (n - k) if n > k else math.nan
+
+
+def kruskal_fn(args: dict[str, Any]) -> dict[str, Any]:
+    from scipy import stats
+
+    desc = frames.require_descriptor(args["dataset"])
+    alpha = _alpha(args)
+    col, grp, lv, arrays, dropped = _frame_groups(desc, args["column"], args["by"], args.get("levels"), None)
+    if any(len(a) < 1 for a in arrays) or sum(len(a) for a in arrays) <= len(lv):
+        raise DataError("each group needs values, and more values than groups in all")
+    res = stats.kruskal(*arrays)
+    total = sum(len(a) for a in arrays)
+    effect = {"name": "epsilon squared (rank-based)", "value": _epsilon_h(*arrays),
+              "ci": _boot_effect(_epsilon_h, arrays, _percentile_ci), "ci_method": boot_note(total)}
+    return _ok(_result(desc, "kruskal", f"Kruskal-Wallis test of {col} by {grp} ({len(lv)} groups)", "H",
+                       float(res.statistic), len(lv) - 1, float(res.pvalue), None, alpha, effect,
+                       {}, {k: int(len(a)) for k, a in zip(lv, arrays)}, [_independence()],
+                       {"mode": "groups", "column": col, "by": grp, "levels": lv, "dropped": dropped}))
+
+
+register(ToolSpec(
+    name="stats.kruskal", domain=Domain.DATA, kind="solver",
+    description="Kruskal-Wallis test (rank-based one-way ANOVA) of a column across the groups of by",
+    schema=schema({"dataset": DATASET, "column": COLUMN, "by": COLUMN, "levels": LEVELS, "alpha": ALPHA},
+                  ["dataset", "column", "by"]),
+    fn=kruskal_fn, always_check=True, canonical=_canon(("column", "by")), dataset_arg="dataset",
+))
+
+
 # ================================================================== stats.regression
 def _design(x_cols: list[Any]) -> Any:
     import numpy as np
@@ -1039,7 +1079,41 @@ def _formula_regression(desc: dict[str, Any], a: dict[str, Any], r: dict[str, An
     cmp.num("p", float(fdist.sf(f, k - 1, dof)), r["p"])
 
 
-FORMULAS = {"welch_t": _formula_ttest, "student_t": _formula_ttest, "one_sample_t": _formula_ttest,
+def _plain_kruskal_h(groups: list[Any]) -> float:
+    pooled = [float(v) for g in groups for v in g]
+    ranks = _plain_ranks(pooled)
+    n = len(pooled)
+    h, start = 0.0, 0
+    for g in groups:
+        r = math.fsum(ranks[start:start + len(g)])
+        h += r * r / len(g)
+        start += len(g)
+    h = 12 / (n * (n + 1)) * h - 3 * (n + 1)
+    sizes: dict[float, int] = {}
+    for v in pooled:
+        sizes[v] = sizes.get(v, 0) + 1
+    correction = 1 - sum(t ** 3 - t for t in sizes.values()) / (n ** 3 - n)
+    return h / correction if correction > 0 else math.nan
+
+
+def _formula_kruskal(desc: dict[str, Any], a: dict[str, Any], r: dict[str, Any], cmp: _Cmp) -> None:
+    from scipy.stats import chi2 as chi2dist
+
+    levels, groups = _plain_groups(desc, a, None)
+    cmp.same("levels", levels, r["spec"]["levels"])
+    h = _plain_kruskal_h(groups)
+    k, n = len(groups), sum(len(g) for g in groups)
+    cmp.num("H", h, r["statistic"]["value"])
+    cmp.same("df", k - 1, r["df"])
+    cmp.num("p", float(chi2dist.sf(h, k - 1)), r["p"])
+    cmp.num("epsilon squared", (h - k + 1) / (n - k), r["effect"]["value"])
+    ci = _boot_effect(lambda *g: (_plain_kruskal_h(list(g)) - len(g) + 1) / (sum(map(len, g)) - len(g)), groups,
+                      _plain_percentile_ci)
+    cmp.seq("epsilon squared CI", ci, r["effect"]["ci"], 1e-9)
+
+
+FORMULAS = {"kruskal": _formula_kruskal,
+            "welch_t": _formula_ttest, "student_t": _formula_ttest, "one_sample_t": _formula_ttest,
             "paired_t": _formula_ttest, "mann_whitney": _formula_mannwhitney, "pearson": _formula_correlation,
             "spearman": _formula_correlation, "chi2": _formula_chi2, "anova": _formula_anova,
             "ols": _formula_regression}
@@ -1203,6 +1277,22 @@ def _permutation_null(desc: dict[str, Any], a: dict[str, Any], r: dict[str, Any]
 
         null, exact = _label_shuffle(labels, fstat)
         return fstat(labels), null, exact, "F over relabelled groups"
+    if test == "kruskal":
+        _, groups = _plain_groups(desc, a, None)
+        values = np.concatenate(groups)
+        ranks = rankdata(values)
+        labels = np.repeat(np.arange(len(groups)), [len(g) for g in groups])
+        sizes = np.bincount(labels)
+        n = len(values)
+        ties = np.unique(values, return_counts=True)[1]
+        correction = 1 - float((ties ** 3 - ties).sum()) / (n ** 3 - n)
+
+        def hstat(lab: Any) -> float:
+            sums = np.bincount(lab, weights=ranks)
+            return float((12 / (n * (n + 1)) * (sums ** 2 / sizes).sum() - 3 * (n + 1)) / correction)
+
+        null, exact = _label_shuffle(labels, hstat)
+        return hstat(labels), null, exact, "H over relabelled groups"
     if test == "chi2":
         ra, rb = r["spec"]["row_levels"], r["spec"]["column_levels"]
         row, col = frames.resolve_column(desc, a["row"]), frames.resolve_column(desc, a["column"])
@@ -1231,7 +1321,7 @@ def _label_shuffle(labels: Any, stat: Callable[[Any], float]) -> tuple[list[floa
 
 
 PERMUTABLE = ("welch_t", "student_t", "mann_whitney", "one_sample_t", "paired_t", "pearson", "spearman", "anova",
-              "chi2")
+              "kruskal", "chi2")
 
 
 def check_permutation_fn(args: dict[str, Any]) -> dict[str, Any]:

@@ -216,7 +216,7 @@ def _adjusted(a: dict, r: dict) -> dict | None:
 _FORMULA = CheckPlan("formula", "stats.check_formula", _stats, 1, required=True, must_pass=True)
 _PERMUTATION = CheckPlan("permutation", "stats.check_permutation",
                          _stats_for("welch_t", "student_t", "one_sample_t", "paired_t", "mann_whitney", "pearson",
-                                    "spearman", "anova", "chi2"), 2)
+                                    "spearman", "anova", "kruskal", "chi2"), 2)
 _STATSMODELS = CheckPlan("statsmodels", "stats.check_statsmodels",
                          _stats_for("welch_t", "student_t", "one_sample_t", "paired_t", "anova", "ols"), 3)
 
@@ -231,6 +231,7 @@ PLANS: dict[str, list[CheckPlan]] = {
     "stats.correlation": [_FORMULA, _PERMUTATION],
     "stats.chi2": [_FORMULA, _PERMUTATION],
     "stats.anova": [_FORMULA, _PERMUTATION, _STATSMODELS],
+    "stats.kruskal": [_FORMULA, _PERMUTATION],
     "stats.regression": [_FORMULA, _STATSMODELS],
     "stats.adjust": [CheckPlan("alt_algorithm", "stats.check_adjust", _adjusted, 1, required=True, must_pass=True)],
     "phys.evaluate": [

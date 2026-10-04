@@ -38,6 +38,7 @@ plausibility = true
 [data]
 alpha = 0.05               # significance level when the question gives none
 max_rows = 5000000         # larger files are refused at import (the tool sandbox has 3 GB)
+max_file_mb = 400          # so are files above this size: pandas needs several times the file in memory
 data_dir = "~/.sciai/datasets"  # imported files are copied here, named by their SHA-256
 
 [store]

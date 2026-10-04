@@ -148,7 +148,12 @@ def result_to_text(result: dict[str, Any]) -> str:
         finals = ", ".join(f"{f} = {float(v):.10g}" for f, v in zip(result.get("funcs", []), value or []))
         text = f"{finals} at {result.get('var', 't')} = {float(t[-1]):.10g}"
     elif kind == "plotspec":
-        text = f"plot ({len(value.get('x', []))} points)"
+        if value.get("version") == 2:
+            from sciai.graph.plotspec import summary
+
+            text = summary(value)
+        else:
+            text = f"plot ({len(value.get('x', []))} points)"
     elif kind in ("dataset", "table", "stats", "adjusted"):
         from sciai.domains.data import report
 

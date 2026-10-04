@@ -245,6 +245,42 @@ def test_five_tests_trigger_the_family_rule_and_holm(make_rt, trial):
     assert_numbers_from_tools(rt, res.final_node)
 
 
+# 5 ---------------------------------------------------------------- regression and fit plot
+def test_regression_with_fit_plot_and_deleting_the_dataset_invalidates_both(make_rt, trial):
+    from sciai.graph import plotspec
+
+    regress = {"action": "call_tool", "tool": "stats.regression", "title": "response on dose",
+               "args": {"dataset": "trial.csv", "y": "response", "x": ["dose"]}}
+
+    def plot(prompt):
+        h = last_handle(prompt, "stats.regression")
+        return {"action": "call_tool", "tool": "plot.fit", "title": "fit", "args": {"dataset": "trial.csv", "node": h}}
+
+    rt = make_rt(ScriptedLLM([FORMAL, regress, plot, finish("stats.regression", text="Fit: ")]))
+    rt.import_file(trial)
+    rt.engine.new_session("regression")
+    res = rt.controller.run("How does response depend on dose in trial.csv?")
+    assert res.status == "answered" and res.verified, res
+    (reg,) = nodes(rt, "stats.regression")
+    (fig,) = nodes(rt, "plot.fit")
+    assert methods(rt, reg.id) == {"formula": "pass", "statsmodels": "pass"}
+    slope = reg.result["coefficients"][1]
+    assert slope["ci"][0] < 0.8 < slope["ci"][1] and "slope dose [mg] = " in res.answer
+    assert fig.type == NodeType.PLOT and {reg.id, reg.tool_inputs["dataset"]} <= set(rt.engine.dependencies(fig.id))
+    spec = fig.result["value"]
+    assert spec["version"] == 2 and [s["type"] for s in spec["series"]] == ["scatter", "line"]
+    line = spec["series"][1]
+    assert line["y"][0] == pytest.approx(reg.result["coefficients"][0]["estimate"] + slope["estimate"] * line["x"][0])
+    assert plotspec.render_png(spec, 600, 400)[:8] == b"\x89PNG\r\n\x1a\n"
+
+    removed = rt.remove_dataset("trial.csv")
+    assert removed == [reg.tool_inputs["dataset"]]
+    for nid in (reg.id, fig.id, res.final_node):
+        assert rt.engine.resolve(nid).status == Status.INVALIDATED
+    assert rt.repo.dataset_by_name("trial.csv") is None
+    assert rt.controller._datasets_text("trial.csv") == ""  # the model is no longer offered the file
+
+
 # 6 ---------------------------------------------------------------- unknown column
 def test_unknown_column_is_an_error_node_and_a_retry(make_rt, trial):
     def wrong(prompt):

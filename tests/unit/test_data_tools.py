@@ -130,6 +130,8 @@ def test_import_refusals(tmp_path, store):
         import_file(write(tmp_path, "d.csv", "x,x\n1,2\n"), repo, R, cfg)
     with pytest.raises(DataError, match="unsupported file type"):
         import_file(write(tmp_path, "d.json", "{}"), repo, R, DataConfig(data_dir=cfg.data_dir))
+    with pytest.raises(DataError, match="files above 0 MB are refused"):
+        import_file(write(tmp_path, "s.csv", "x\n1\n"), repo, R, DataConfig(data_dir=cfg.data_dir, max_file_mb=0))
     with pytest.raises(DataError, match="more than 2 rows"):
         import_file(write(tmp_path, "big.csv", "x\n1\n2\n3\n"), repo, R,
                     DataConfig(data_dir=cfg.data_dir, max_rows=2))
@@ -229,3 +231,26 @@ def test_fingerprints_use_the_dataset_key_and_real_column_names(trial):
     assert canon({"dataset": trial, "column": "score", "by": "GROUP"}) == \
         canon({"dataset": trial, "column": "score [points]", "by": "group", "alternative": "two-sided",
                "alpha": 0.05})
+
+
+# ------------------------------------------------------------------ plots (PlotSpec v2)
+def test_plot_tools(trial):
+    from sciai.graph import plotspec
+
+    sc = run("plot.scatter", dataset=trial, x="mass", y="height", by="group")
+    v = sc["value"]
+    assert v["version"] == 2 and [s["label"] for s in v["series"]] == ["A", "B"]
+    assert v["xlabel"] == "mass [kg]" and v["series"][0]["x"] == [70.0, 82.0, 65.0]
+    assert v["x"] == v["series"][0]["x"]  # a v1 reader still sees the first series
+    line = run("plot.line", dataset=trial, x="height", y="mass")["value"]["series"][0]
+    assert line["x"] == sorted(line["x"]) and len(line["x"]) == 5  # the row without a mass is left out
+    hist = run("plot.histogram", dataset=trial, column="score", bins=3)["value"]
+    assert sum(hist["series"][0]["counts"]) == 5 and hist["notes"] == ["bins: 3 equal-width bins"]
+    box = run("plot.box", dataset=trial, column="score", by="group")["value"]["series"][0]["boxes"]
+    assert [b["label"] for b in box] == ["A", "B"] and box[1]["med"] == 18.5
+    for spec in (v, hist, run("plot.box", dataset=trial, column="score")["value"]):
+        assert plotspec.render_png(spec, 400, 300)[:4] == b"\x89PNG"
+    old = {"x": [0, 1, 2], "y": [0, 1, None], "label": "x**2", "xlabel": "x"}  # a Phase 1 spec
+    assert plotspec.normalize(old)["series"][0]["type"] == "line"
+    assert plotspec.render_png(old, 300, 200)[:4] == b"\x89PNG"
+    assert "is text, not numeric" in fails("plot.scatter", dataset=trial, x="group", y="mass")

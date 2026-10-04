@@ -27,7 +27,7 @@ class Role:
 # Data tools the model may call. data.load (import) and stats.adjust (the family rule) are run by
 # the app itself, never chosen by the model.
 DATA_SOLVERS = ("data.describe", "data.filter", "data.derive", "data.group", "stats.ttest", "stats.mannwhitney",
-                "stats.correlation", "stats.chi2", "stats.anova", "stats.regression")
+                "stats.correlation", "stats.chi2", "stats.anova", "stats.kruskal", "stats.regression")
 SOLVERS = ("sympy.", "numeric.evaluate", "numeric.quad", "numeric.root", "units.convert", "plot.",
            "phys.evaluate", "phys.constant", "ode.dsolve", "ode.solve_ivp", "linalg.solve", "circuit.dc",
            *DATA_SOLVERS)

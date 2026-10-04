@@ -65,6 +65,10 @@ def import_file(path: str | Path, repo: Repository, runner: Runner, cfg: DataCon
     if not src.is_file():
         raise DataError(f"{src} is not a file")
     fmt = frames.format_of(src)
+    size_mb = src.stat().st_size / 1e6
+    if size_mb > cfg.max_file_mb:
+        raise DataError(f"{src.name} is {size_mb:.0f} MB; files above {cfg.max_file_mb} MB are refused before "
+                        "loading (raise [data] max_file_mb if the machine has the memory)")
     sha = frames.file_sha256(src)
     stored = _store_copy(src, sha, fmt, cfg.path)
     name = (name or src.name).strip()
