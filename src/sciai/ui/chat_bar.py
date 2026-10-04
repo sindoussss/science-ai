@@ -24,16 +24,13 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from sciai.ui.canvas.pins import add_soft_shadow
 from sciai.ui.chat.inline import Column, InlineText, PlotCard, TableCard
 from sciai.ui.icons import icon
 from sciai.ui.layout_util import clear_layout
-from sciai.ui.shell import CapsLabel, ElidedLabel
-from sciai.ui.theme.theme import Theme
+from sciai.ui.shell import CapsLabel, ElidedLabel, add_soft_shadow
+from sciai.ui.theme.theme import Theme, keep_fractional_width
 
 PRODUCT_NAME = "Science AI"
-COLUMN_MAX_W = 720
-SIDE_PAD = 24
 
 
 def fmt_elapsed(seconds: float) -> str:
@@ -62,11 +59,16 @@ class Bubble(QFrame):
         body.setWordWrap(True)
         body.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         lay.addWidget(body)
-        # A word-wrapped QLabel reports its narrowest wrap as its size hint; size it from the real width.
+        # A word-wrapped QLabel reports its narrowest wrap as its size hint, so the bubble asks for its
+        # text's real width instead (sizeHint), and may still shrink and wrap in a narrow column: a
+        # minimum width here would push the whole thread column past its right edge.
         body.ensurePolished()
         widest = max((body.fontMetrics().horizontalAdvance(line) for line in text.splitlines() or [""]), default=0)
-        body.setMinimumWidth(min(widest + 4, self.MAX_W - 28))
+        self._natural_w = min(widest + 4 + 28 + 2, self.MAX_W)
         self.text = text
+
+    def sizeHint(self) -> QSize:  # noqa: N802
+        return QSize(self._natural_w, self.heightForWidth(self._natural_w))
 
 
 class AnswerCard(QFrame):
@@ -76,9 +78,9 @@ class AnswerCard(QFrame):
                  final_id: str | None) -> None:
         super().__init__()
         self.setObjectName("answerCard")
-        self.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Preferred)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(16, 12, 16, 14)
+        lay.setContentsMargins(16, 16, 16, 16)
         lay.setSpacing(8)
         who = QLabel("Answer")
         who.setObjectName("secondary")
@@ -88,27 +90,63 @@ class AnswerCard(QFrame):
         body.setWordWrap(True)
         body.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         lay.addWidget(body)
-        row = QHBoxLayout()
-        row.setSpacing(8)
         head = "✓ Verified" if verified else "● Not fully verified"
         extra = " · from knowledge base" if reused else ""
         self.chip_text = f"{head} · {_plural(steps, 'step')} · {_plural(calls, 'model call')}{extra}"
-        chip = QLabel(self.chip_text)
-        chip.setStyleSheet(theme.chip_css("verified" if verified else "proposed"))
-        row.addWidget(chip)
-        row.addStretch(1)
+        self.chip = QLabel(self.chip_text)
+        self.chip.setStyleSheet(theme.chip_css("verified" if verified else "proposed"))
         self.view_btn = QPushButton("View graph")
         self.view_btn.setObjectName("outline")
         self.view_btn.setIcon(icon("graph", theme.hex("text")))
         self.view_btn.setEnabled(final_id is not None)
         self.view_btn.clicked.connect(lambda: final_id and self.view_graph.emit(final_id))
-        row.addWidget(self.view_btn)
-        lay.addLayout(row)
-        body.ensurePolished()
-        chip.ensurePolished()
-        widest = max(body.fontMetrics().horizontalAdvance(math),
-                     chip.sizeHint().width() + 8 + self.view_btn.sizeHint().width())
-        body.setMinimumWidth(min(widest + 4, COLUMN_MAX_W - 32))
+        # chip left, button right; in a narrow column the button wraps under the chip instead of
+        # forcing the card wider than the column
+        self.row = QHBoxLayout()
+        self.row.setSpacing(8)
+        self.row.addWidget(self.chip)
+        self.row.addStretch(1)
+        self.row.addWidget(self.view_btn)
+        self.row2 = QHBoxLayout()
+        self.row2.setSpacing(0)
+        lay.addLayout(self.row)
+        lay.addLayout(self.row2)
+        lay.setSizeConstraint(QVBoxLayout.SizeConstraint.SetNoConstraint)
+        self.wrapped = False
+
+    def _one_row_width(self) -> int:
+        m = self.layout().contentsMargins()
+        return self.chip.sizeHint().width() + 8 + self.view_btn.sizeHint().width() + m.left() + m.right() + 2
+
+    def minimumSizeHint(self) -> QSize:  # noqa: N802
+        m = self.layout().contentsMargins()
+        w = max(self.chip.sizeHint().width(), self.view_btn.sizeHint().width()) + m.left() + m.right() + 2
+        return QSize(w, super().minimumSizeHint().height())
+
+    def hasHeightForWidth(self) -> bool:  # noqa: N802
+        return True
+
+    def heightForWidth(self, w: int) -> int:  # noqa: N802
+        self._wrap(w < self._one_row_width())
+        return self.layout().heightForWidth(w) if self.layout().hasHeightForWidth() else self.sizeHint().height()
+
+    def _wrap(self, wrap: bool) -> None:
+        if wrap == self.wrapped:
+            return
+        self.wrapped = wrap
+        if wrap:
+            self.row.removeWidget(self.view_btn)
+            self.row2.addWidget(self.view_btn)
+            self.row2.addStretch(1)
+        else:
+            self.row2.removeWidget(self.view_btn)
+            while self.row2.count():
+                self.row2.takeAt(0)
+            self.row.addWidget(self.view_btn)
+
+    def resizeEvent(self, event) -> None:  # noqa: N802, ANN001
+        self._wrap(self.width() < self._one_row_width())
+        super().resizeEvent(event)
 
 
 class ThinkingGroup(QWidget):
@@ -217,12 +255,20 @@ class ToolsPopover(QFrame):
         self.adjustSize()
 
 
-class Composer(QFrame):
-    """Status strip on top, then the white input card: "+", tools | mic, send (terracotta)."""
+class Composer(QWidget):
+    """Status strip attached on top of the input card (as in the reference), both painted here so
+    their borders coincide exactly: strip #F4F3EF with radius 20 20 0 0, the card radius 20 over it.
+    Bottom row: "+" and tools on the left, mic and the terracotta send button on the right."""
 
     submitted = pyqtSignal(str)
     stop = pyqtSignal()
     strip_clicked = pyqtSignal()
+
+    STRIP_H = 36
+    RADIUS = 20
+    PAD = 16
+    ICON = 20
+    HIT = 32  # 20px icon + 12px of hit padding
 
     def __init__(self, theme: Theme) -> None:
         super().__init__()
@@ -235,23 +281,30 @@ class Composer(QFrame):
         self.status_strip = QToolButton()
         self.status_strip.setObjectName("statusStrip")
         self.status_strip.setIcon(icon("bolt", theme.hex("status_strip_text")))
+        self.status_strip.setIconSize(QSize(14, 14))
         self.status_strip.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         self.status_strip.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.status_strip.setFixedHeight(self.STRIP_H)
         self.status_strip.setCursor(Qt.CursorShape.PointingHandCursor)
         self.status_strip.clicked.connect(self.strip_clicked.emit)
         self.status_strip.setText("No tool calls yet")
+        keep_fractional_width(self.status_strip, theme.px("size_small_px"))
         lay.addWidget(self.status_strip)
 
-        card = QFrame()
-        card.setObjectName("composerCard")
-        cl = QVBoxLayout(card)
-        cl.setContentsMargins(16, 10, 10, 10)
-        cl.setSpacing(6)
+        self.card = QWidget()
+        self.card.setObjectName("composerCard")
+        cl = QVBoxLayout(self.card)
+        # 16px padding to the glyphs: the icon buttons carry 6px of hit padding, so the card's own is 10
+        hit_pad = (self.HIT - self.ICON) // 2
+        cl.setContentsMargins(self.PAD - hit_pad, self.PAD, self.PAD, self.PAD - 4)
+        cl.setSpacing(8)
         self.input = QPlainTextEdit()
         self.input.setObjectName("composerInput")
         self.input.setPlaceholderText("Ask anything")
-        self.input.setFixedHeight(48)
-        self.input.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.input.document().setDocumentMargin(0)
+        self.input.setFrameShape(QFrame.Shape.NoFrame)
+        self.input.setViewportMargins(hit_pad, 0, 0, 0)  # text starts 16px in, level with the icon glyphs
+        self.input.setFixedHeight(44)
         self.input.installEventFilter(self)
         cl.addWidget(self.input)
         row = QHBoxLayout()
@@ -260,9 +313,10 @@ class Composer(QFrame):
 
         def icon_btn(name: str, tip: str) -> QToolButton:
             b = QToolButton()
-            b.setObjectName("iconButton")
+            b.setObjectName("composerIcon")
             b.setIcon(icon(name, ink))
-            b.setIconSize(QSize(18, 18))
+            b.setIconSize(QSize(self.ICON, self.ICON))
+            b.setFixedSize(self.HIT, self.HIT)
             b.setToolTip(tip)
             return b
 
@@ -278,11 +332,28 @@ class Composer(QFrame):
         row.addWidget(self.tools_btn)
         row.addStretch(1)
         row.addWidget(self.mic_btn)
-        row.addSpacing(6)
+        row.addSpacing(8)
         row.addWidget(self.send_btn)
         cl.addLayout(row)
-        lay.addWidget(card)
+        lay.addWidget(self.card)
+        add_soft_shadow(self, blur=8, dy=2, alpha=13)  # 0 2px 8px rgba(0,0,0,0.05)
         self.set_busy(False)
+
+    def paintEvent(self, event) -> None:  # noqa: N802, ANN001
+        from PyQt6.QtCore import QRectF
+        from PyQt6.QtGui import QPainter, QPen
+
+        t = self.theme
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        pen = QPen(t.c("border"), 1)
+        r = self.RADIUS
+        p.setPen(pen)
+        p.setBrush(t.c("status_strip_bg"))
+        p.drawRoundedRect(QRectF(0.5, 0.5, self.width() - 1, self.height() - 1), r, r)
+        p.setBrush(t.c("panel"))
+        p.drawRoundedRect(QRectF(0.5, self.STRIP_H + 0.5, self.width() - 1, self.height() - self.STRIP_H - 1), r, r)
+        p.end()
 
     def eventFilter(self, obj: QObject, event: QEvent) -> bool:  # noqa: N802
         if obj is self.input and event.type() == QEvent.Type.KeyPress:
@@ -318,49 +389,50 @@ class ChatPane(QWidget):
     stop = pyqtSignal()
     view_graph = pyqtSignal(str)
 
+    TOP = 8  # title text top lands ~20px below the window edge, as in the reference
+    TITLE_GAP = 16  # space below the session title before the first message
+    BLOCK_GAP = 24  # between thread blocks (paragraph, table card, answer card): 8px grid
+    PAD_FRACTION = 0.045  # left/right padding of the single content column, of the chat's width
+
     def __init__(self, theme: Theme) -> None:
         super().__init__()
         self.theme = theme
         self.setObjectName("flat")
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 14, 0, 12)
-        outer.setSpacing(8)
+        outer.setContentsMargins(0, self.TOP, 0, 8)  # composer bottom 8px above the cards' bottoms
+        outer.setSpacing(0)
 
         self.title = ElidedLabel("New session")
         self.title.setObjectName("sessionTitle")
-        self.title.setContentsMargins(SIDE_PAD, 0, SIDE_PAD, 0)
         outer.addWidget(self.title)
+        outer.addSpacing(self.TITLE_GAP)
 
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
         self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         inner = QWidget()
         inner.setObjectName("flat")
-        h = QHBoxLayout(inner)
-        h.setContentsMargins(SIDE_PAD, 4, SIDE_PAD, 8)
+        self.column_lay = QHBoxLayout(inner)
         self.column = QWidget()
         self.column.setObjectName("flat")
-        self.column.setMaximumWidth(COLUMN_MAX_W)
         self.messages = QVBoxLayout(self.column)
         self.messages.setContentsMargins(0, 0, 0, 0)
-        self.messages.setSpacing(14)
+        self.messages.setSpacing(self.BLOCK_GAP)
         self.messages.addStretch(1)
-        h.addStretch(0)
-        h.addWidget(self.column, 1)
-        h.addStretch(0)
+        self.column_lay.addWidget(self.column, 1)
         self.scroll.setWidget(inner)
         outer.addWidget(self.scroll, 1)
+        outer.addSpacing(16)
         self._stick = True
         bar = self.scroll.verticalScrollBar()
         bar.rangeChanged.connect(lambda _lo, hi: bar.setValue(hi) if self._stick else None)
         bar.valueChanged.connect(lambda v: setattr(self, "_stick", v >= bar.maximum() - 4))
 
-        wrap = QHBoxLayout()
-        wrap.setContentsMargins(SIDE_PAD - 8, 0, SIDE_PAD - 8, 0)
+        self.composer_lay = QHBoxLayout()
         self.composer = Composer(theme)
-        self.composer.setMaximumWidth(COLUMN_MAX_W + 16)
-        wrap.addWidget(self.composer, 1)
-        outer.addLayout(wrap)
+        self.composer_lay.addWidget(self.composer, 1)
+        outer.addLayout(self.composer_lay)
+        self._apply_pad()
         self.input = self.composer.input
         self.composer.submitted.connect(self.submitted.emit)
         self.composer.stop.connect(self.stop.emit)
@@ -381,6 +453,28 @@ class ChatPane(QWidget):
         self._tick.timeout.connect(self._update_strip)
         # last: the filter can fire as soon as it is installed, so everything it reads must exist
         QApplication.instance().installEventFilter(self)
+
+    # layout ------------------------------------------------------------------
+    def pad(self) -> int:
+        return round(self.PAD_FRACTION * max(self.width(), 1))
+
+    def _apply_pad(self) -> None:
+        """One content column: title, thread blocks and composer share the same left/right edges."""
+        p = self.pad()
+        self.title.setContentsMargins(p, 0, p, 0)
+        self.column_lay.setContentsMargins(p, 0, p, 8)
+        self.composer_lay.setContentsMargins(p, 0, p, 0)
+        self.title._elide()
+        for b in self.column.findChildren(Bubble):
+            self._cap_bubble(b)
+
+    def _cap_bubble(self, b: "Bubble") -> None:
+        """User bubbles stay right-aligned and at most 80% of the column wide."""
+        b.setMaximumWidth(min(Bubble.MAX_W, int(0.8 * (self.width() - 2 * self.pad()))))
+
+    def resizeEvent(self, event) -> None:  # noqa: N802, ANN001
+        super().resizeEvent(event)
+        self._apply_pad()
 
     # composer / status ---------------------------------------------------------
     def _submit(self) -> None:  # kept for tests and callers that drive the input directly
@@ -480,14 +574,25 @@ class ChatPane(QWidget):
     def set_title(self, text: str) -> None:
         self.title.set_full(text)
 
-    def _append(self, widget: QWidget, align: Qt.AlignmentFlag = Qt.AlignmentFlag.AlignLeft) -> None:
+    def _append(self, widget: QWidget, align: Qt.AlignmentFlag = Qt.AlignmentFlag(0)) -> None:
+        """Blocks fill the column (shared left and right edges) unless an alignment is given."""
         self._stick = True
         self.messages.insertWidget(self.messages.count() - 1, widget, 0, align)
         bar = self.scroll.verticalScrollBar()
         bar.setValue(bar.maximum())
 
     def add_user(self, text: str, label: str = "") -> None:
-        self._append(Bubble(self.theme, text), Qt.AlignmentFlag.AlignRight)
+        bubble = Bubble(self.theme, text)
+        self._cap_bubble(bubble)
+        # right-aligned through a full-width row, not a layout alignment flag: an aligned item gets its
+        # height for the whole column width, so a bubble that wraps at its own width would be cut off
+        row = QWidget()
+        row.setObjectName("flat")
+        rl = QHBoxLayout(row)
+        rl.setContentsMargins(0, 0, 0, 0)
+        rl.addStretch(1)
+        rl.addWidget(bubble)
+        self._append(row)
         self._plain.append(f"You: {text}" if not label else f"You {label}: {text}")
         self._thinking = None
 

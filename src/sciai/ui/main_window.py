@@ -28,17 +28,21 @@ from sciai.ui.chat.inline import Column
 from sciai.ui.chat_bar import ChatPane, fmt_elapsed
 from sciai.ui.controller_thread import EngineExecutor, EventBridge, RootConfirmer
 from sciai.ui.mathtext import answer_text, prose_text, value_text
+from sciai.ui.scrollbars import install_everywhere as install_overlay_scrollbars
 from sciai.ui.shell import AppRoot, Card, HairlineSplitter
 from sciai.ui.sidebar import FILES_DIR, Sidebar
 from sciai.ui.theme.theme import Theme
 from sciai.ui.workspace.workspace import Workspace
 
-SIDEBAR_W = 220
+# Proportions at any window width (Yeri's polish pass): sidebar card 17% (200-240px),
+# workspace 40% (440-640px, measured from the divider to the window's right edge), chat the
+# rest and never under 440px. Dragging the divider changes the workspace's share.
+SIDEBAR_FRACTION, SIDEBAR_MIN_W, SIDEBAR_MAX_W = 0.17, 200, 240
+WORKSPACE_FRACTION, WORKSPACE_MIN_W, WORKSPACE_MAX_W = 0.40, 440, 640
 CHAT_MIN_W = 440
-WORKSPACE_W = 420
-WORKSPACE_MIN_W = 340
-WORKSPACE_MAX_W = 640
-WORKSPACE_INSET = 12  # the workspace card sits 12px in from the divider
+GUTTER = 12  # window edge to cards, and sidebar card to chat
+WORKSPACE_INSET = 10  # the workspace card sits 10px in from the divider
+HANDLE_W = 5  # splitter grab area; the 1px divider is drawn at its center
 MIN_SIZE = (1200, 720)
 # Short check names for the chat table (the Review tab has the long ones).
 CHECK_SHORT = {"symbolic_vs_numeric": "numeric", "alt_algorithm": "alt. method", "known_value": "known value",
@@ -89,13 +93,12 @@ class MainWindow(QMainWindow):
         self.graph = self.workspace.graph
         self.node_panel = self.workspace.node_panel
 
-        gap = theme.space("gap")
         root = AppRoot(theme)
         rl = QHBoxLayout(root)
-        rl.setContentsMargins(gap, gap, gap, gap)
-        rl.setSpacing(gap)
+        rl.setContentsMargins(GUTTER, GUTTER, 0, GUTTER)  # the right gutter belongs to the workspace pane
+        rl.setSpacing(GUTTER)
         self.sidebar_card = root.track(Card(self.sidebar))
-        self.sidebar_card.setFixedWidth(SIDEBAR_W)
+        self.sidebar_card.setFixedWidth(SIDEBAR_MIN_W)
         rl.addWidget(self.sidebar_card)
 
         # Chat is flat on the window background; the splitter handle is the 1px divider.
@@ -104,17 +107,20 @@ class MainWindow(QMainWindow):
         self.workspace_pane = QWidget()
         self.workspace_pane.setObjectName("flat")
         wl = QVBoxLayout(self.workspace_pane)
-        wl.setContentsMargins(WORKSPACE_INSET, 0, 0, 0)
+        wl.setContentsMargins(WORKSPACE_INSET, 0, GUTTER, 0)
         wl.addWidget(self.workspace_card)
-        self.workspace_pane.setMinimumWidth(WORKSPACE_MIN_W + WORKSPACE_INSET)
-        self.workspace_pane.setMaximumWidth(WORKSPACE_MAX_W + WORKSPACE_INSET)
-        self.main_split = HairlineSplitter(Qt.Orientation.Horizontal, theme, last_px=WORKSPACE_W + WORKSPACE_INSET)
+        self._ws_fraction = WORKSPACE_FRACTION
+        self.workspace_pane.setMinimumWidth(WORKSPACE_MIN_W - self._handle_right())
+        self.workspace_pane.setMaximumWidth(WORKSPACE_MAX_W - self._handle_right())
+        self.main_split = HairlineSplitter(Qt.Orientation.Horizontal, theme, last_px=480)
+        self.main_split.setHandleWidth(HANDLE_W)
         self.main_split.addWidget(self.chat)
         self.main_split.addWidget(self.workspace_pane)
         self.main_split.setStretchFactor(0, 1)
         self.main_split.setStretchFactor(1, 0)
         rl.addWidget(self.main_split, 1)
         self.setCentralWidget(root)
+        self.main_split.splitterMoved.connect(self._divider_moved)
         QShortcut(QKeySequence("Ctrl+G"), self, activated=self.toggle_workspace,
                   context=Qt.ShortcutContext.WindowShortcut)
 
@@ -146,6 +152,8 @@ class MainWindow(QMainWindow):
         self.sidebar.settings.connect(self._open_environment)
         self.sidebar.add_file.connect(self._add_file)
 
+        install_overlay_scrollbars(self)
+
         sessions = rt.repo.list_sessions()
         if sessions:
             self._open_session(sessions[0]["id"])
@@ -157,12 +165,47 @@ class MainWindow(QMainWindow):
         threading.Thread(target=self._poll_env, daemon=True).start()
 
     # --------------------------------------------------------------- shell
+    @staticmethod
+    def _handle_right() -> int:
+        """Pixels of the splitter handle right of the divider line (the line is at its center)."""
+        return HANDLE_W - HANDLE_W // 2
+
+    def region_widths(self) -> tuple[int, int, int]:
+        """(sidebar, chat, workspace) in px, summing to the window width: the sidebar is its card,
+        the workspace runs from the divider line to the right edge, the chat is everything between
+        (the gutters included). These are the 17% / 43% / 40% regions of the spec."""
+        side = self.sidebar_card.width()
+        if not self.workspace_pane.isVisible():
+            return side, self.width() - side, 0
+        handle = self.main_split.handle(1)
+        line_x = handle.mapTo(self, handle.rect().topLeft()).x() + HANDLE_W // 2
+        return side, line_x - side, self.width() - line_x
+
+    def _apply_proportions(self) -> None:
+        w = self.width()
+        side = int(max(SIDEBAR_MIN_W, min(SIDEBAR_MAX_W, round(SIDEBAR_FRACTION * w))))
+        self.sidebar_card.setFixedWidth(side)
+        chat_left = GUTTER + side + GUTTER
+        ws = max(WORKSPACE_MIN_W, min(WORKSPACE_MAX_W, round(self._ws_fraction * w)))
+        ws = max(WORKSPACE_MIN_W, min(ws, w - chat_left - CHAT_MIN_W))  # the chat keeps 440px
+        self.main_split.last_px = ws - self._handle_right()
+        self.main_split._apply_px()
+
+    def _divider_moved(self, _pos: int, _index: int) -> None:
+        _s, _c, ws = self.region_widths()
+        if self.width() > 0 and ws > 0:
+            self._ws_fraction = ws / self.width()
+
+    def resizeEvent(self, event) -> None:  # noqa: N802, ANN001
+        super().resizeEvent(event)
+        self._apply_proportions()
+
     def toggle_workspace(self) -> None:
         show = not self.workspace_pane.isVisible()
         self.workspace_pane.setVisible(show)
         self.sidebar.workspace_action.setChecked(show)
         if show:
-            self.main_split._apply_px()
+            self._apply_proportions()
 
     def _open_environment(self) -> None:
         if not self.workspace_pane.isVisible():
@@ -319,8 +362,9 @@ class MainWindow(QMainWindow):
             check = CHECK_SHORT.get(ev[-1].method, ev[-1].method.replace("_", " ")) if ev else "—"
             rows.append([handles.get(n.id, "?"), n.tool_name or "", value_text(n.display_result()), check,
                          n.status.value])
-        self.chat.add_table([Column("step", "code"), Column("tool", "code"), Column("result", "code", 90, flex=True),
-                             Column("check", "text"), Column("status", "status")], rows)
+        self.chat.add_table([Column("step", "code", 40), Column("tool", "code", shrink=True),
+                             Column("result", "code", 60, flex=True), Column("check", "text", 40, shrink=True),
+                             Column("status", "status")], rows)
         for n in steps:
             if n.result and n.result.get("kind") == "plotspec" and n.status.value not in ("failed", "invalidated"):
                 self.chat.add_plot(n.result["value"], f"{handles.get(n.id, '')} · {n.title}")

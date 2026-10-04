@@ -204,3 +204,15 @@ class CapsLabel(QWidget):
         p.setPen(self.theme.c("popover_head"))
         p.drawText(self.rect(), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, self.text)
         p.end()
+
+
+def add_soft_shadow(w: QWidget, blur: float = 18, dy: float = 4, alpha: int = 26) -> None:
+    """Soft drop shadow for popovers and the composer (small widgets only: an effect re-renders
+    its widget offscreen on every update, which would be costly on a whole card or the canvas)."""
+    from PyQt6.QtWidgets import QGraphicsDropShadowEffect
+
+    fx = QGraphicsDropShadowEffect(w)
+    fx.setBlurRadius(blur)
+    fx.setOffset(0, dy)
+    fx.setColor(QColor(0, 0, 0, alpha))
+    w.setGraphicsEffect(fx)

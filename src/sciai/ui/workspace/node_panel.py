@@ -19,7 +19,6 @@ from PyQt6.QtWidgets import (
     QMenu,
     QPushButton,
     QScrollArea,
-    QTabWidget,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -34,6 +33,7 @@ from sciai.ui.layout_util import FlowLayout, clear_layout
 from sciai.ui.theme.theme import STATUS_ICON, Theme
 from sciai.ui.workspace.code_view import CodeView
 from sciai.ui.workspace.review import ReviewPanel
+from sciai.ui.workspace.subtabs import SubTabs
 
 TAB_NAMES = ("Code", "Execution Log", "Messages", "Environment", "Review")
 
@@ -108,7 +108,7 @@ class NodePanel(QWidget):
 
         head_w = QWidget()
         head = QHBoxLayout(head_w)
-        head.setContentsMargins(14, 8, 8, 6)
+        head.setContentsMargins(16, 8, 10, 4)
         head.setSpacing(6)
         self.cell_tag = QLabel()
         self.cell_tag.setObjectName("cellTag")
@@ -146,28 +146,21 @@ class NodePanel(QWidget):
         lay.addWidget(head_w)
 
         self.warning = QLabel()
-        self.warning.setStyleSheet(f"color:{t.hex('warning')}; padding: 0 14px 6px 14px;")
+        self.warning.setStyleSheet(f"color:{t.hex('warning')}; padding: 0 16px 6px 16px;")
         self.warning.setWordWrap(True)
         self.warning.hide()
         lay.addWidget(self.warning)
 
-        self.tabs = QTabWidget()
-        self.tabs.setDocumentMode(True)
-        self.tabs.tabBar().setExpanding(False)
-        self.tabs.tabBar().setDrawBase(False)
-        # Too narrow for all five labels (a workspace dragged toward its 340px minimum): tabs
-        # shrink and elide instead of growing scroll arrows. At the default width all fit.
-        self.tabs.tabBar().setUsesScrollButtons(False)
-        self.tabs.tabBar().setElideMode(Qt.TextElideMode.ElideRight)
+        self.tabs = SubTabs(t)
         lay.addWidget(self.tabs, 1)
 
         # Code ---------------------------------------------------------------------------
         code_page = QWidget()
         cl = QVBoxLayout(code_page)
-        cl.setContentsMargins(0, 10, 0, 0)
+        cl.setContentsMargins(0, 12, 0, 0)
         cl.setSpacing(0)
         top = QHBoxLayout()
-        top.setContentsMargins(12, 0, 12, 10)
+        top.setContentsMargins(16, 0, 16, 8)
         self.download = QPushButton("Download script")
         self.download.setObjectName("primary")
         self.download.setIcon(icon("download", t.hex("accent_text")))
@@ -181,7 +174,7 @@ class NodePanel(QWidget):
         inputs = QWidget()
         inputs.setObjectName("inputsRow")
         il = QHBoxLayout(inputs)
-        il.setContentsMargins(12, 8, 12, 8)
+        il.setContentsMargins(16, 8, 16, 8)
         il.setSpacing(10)
         in_lbl = _secondary("Inputs")
         il.addWidget(in_lbl, 0, Qt.AlignmentFlag.AlignTop)
@@ -200,7 +193,7 @@ class NodePanel(QWidget):
         self.output_toggle.setIconSize(QSize(12, 12))
         self.output_toggle.toggled.connect(self._output_toggled)
         trow = QHBoxLayout()
-        trow.setContentsMargins(10, 6, 10, 0)
+        trow.setContentsMargins(12, 6, 12, 0)
         trow.addWidget(self.output_toggle)
         trow.addStretch(1)
         cl.addLayout(trow)
@@ -210,7 +203,7 @@ class NodePanel(QWidget):
         self.output.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.output_box = QWidget()
         ob = QVBoxLayout(self.output_box)
-        ob.setContentsMargins(14, 2, 14, 12)
+        ob.setContentsMargins(16, 2, 16, 12)
         ob.addWidget(self.output)
         cl.addWidget(self.output_box)
         self._output_toggled(True)
@@ -218,7 +211,7 @@ class NodePanel(QWidget):
         # Execution Log ------------------------------------------------------------------
         log_body = QWidget()
         self.log_box = QVBoxLayout(log_body)
-        self.log_box.setContentsMargins(14, 10, 14, 10)
+        self.log_box.setContentsMargins(16, 12, 16, 12)
         self.log_box.setSpacing(2)
         # Messages -----------------------------------------------------------------------
         msg_page = QWidget()
@@ -226,7 +219,7 @@ class NodePanel(QWidget):
         ml.setContentsMargins(0, 0, 0, 10)
         msg_body = QWidget()
         self.msg_box = QVBoxLayout(msg_body)
-        self.msg_box.setContentsMargins(14, 10, 14, 10)
+        self.msg_box.setContentsMargins(16, 12, 16, 12)
         self.msg_box.setSpacing(10)
         ml.addWidget(_scroll(msg_body), 1)
         self.chat_input = QLineEdit()
@@ -239,13 +232,13 @@ class NodePanel(QWidget):
         # Environment --------------------------------------------------------------------
         env_body = QWidget()
         self.env_grid = QGridLayout(env_body)
-        self.env_grid.setContentsMargins(14, 12, 14, 12)
+        self.env_grid.setContentsMargins(16, 12, 16, 12)
         self.env_grid.setHorizontalSpacing(16)
         self.env_grid.setVerticalSpacing(8)
         # Review -------------------------------------------------------------------------
         review_page = QWidget()
         rl = QVBoxLayout(review_page)
-        rl.setContentsMargins(12, 10, 8, 0)
+        rl.setContentsMargins(16, 12, 12, 0)
         rl.setSpacing(0)
         actions = QHBoxLayout()
         actions.setSpacing(6)

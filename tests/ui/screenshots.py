@@ -4,7 +4,7 @@
 
 For each size: (a) chat with the table and answer cards, (b) a run in progress with the
 tools popover open, (c) Graph tab with a pin popover, (d) node Code tab, (e) node Review tab.
-With a reference image, also writes a side-by-side of the reference and (a) at 1440x900.
+With a reference image, also writes a side-by-side of the reference and (a) at 1200x720.
 """
 from __future__ import annotations
 
@@ -17,6 +17,14 @@ from pathlib import Path
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 SIZES = [(1200, 720), (1440, 900)]
+# The app window inside the reference screenshot (it sits on a decorative backdrop), measured on the
+# 2000px-wide preview of the 2048px original: (left, top, right, bottom).
+REF_WINDOW_2000 = (82, 82, 1918, 1146)
+
+
+def app_window_box(ref) -> tuple[int, int, int, int]:  # noqa: ANN001 - a PIL image
+    k = ref.width / 2000
+    return tuple(round(v * k) for v in REF_WINDOW_2000)  # type: ignore[return-value]
 PAUSE_AT_CALL = 5  # tool call to hold the run at for (b)
 
 
@@ -121,8 +129,9 @@ def main() -> None:
     if reference is not None:
         from PIL import Image
 
-        ours = Image.open(out / "a-chat-1440x900.png").convert("RGB")
+        ours = Image.open(out / "a-chat-1200x720.png").convert("RGB")
         ref = Image.open(reference).convert("RGB")
+        ref = ref.crop(app_window_box(ref))  # the app window only, without the backdrop around it
         ref = ref.resize((round(ref.width * ours.height / ref.height), ours.height), Image.LANCZOS)
         gap = 24
         side = Image.new("RGB", (ref.width + gap + ours.width, ours.height), (255, 255, 255))

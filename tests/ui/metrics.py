@@ -97,6 +97,8 @@ class Metrics:
     chat_w: int
     sidebar_w: int
     workspace_w: int
+    regions: tuple[int, int, int]
+    tab_gaps: list[int]
     chat_widest: bool
     scale: float
     title_px: float
@@ -211,11 +213,13 @@ def measure(win: MainWindow) -> Metrics:
     titles_not_full = [it.node.title for it in items
                        if len(it.node.title) <= TITLE_FULL_CHARS and not it.title_layout()[1]]
     clipped = [f"[graph] {c}" for c in visible_clipping(win)]
+    tab_gaps: list[int] = []
     for idx, name in ((0, "code"), (4, "review")):
         ws.show_node_tab()
         ws.node_panel.tabs.setCurrentIndex(idx)
         pump(app, lambda: True)
         clipped += [f"[{name}] {c}" for c in visible_clipping(win)]
+        tab_gaps = ws.node_panel.tabs.label_gaps()
     ws.show_graph()
     pump(app, lambda: True)
     # popovers: the running-tools list and a pin note
@@ -232,7 +236,8 @@ def measure(win: MainWindow) -> Metrics:
     pills = [b.text() for b in (ws.graph_tab, ws.node_tab) if b.isVisible()]
     return Metrics(
         window=f"{win.width()}x{win.height()}",
-        chat_w=chat_w, sidebar_w=side_w, workspace_w=ws_w,
+        chat_w=chat_w, sidebar_w=side_w, workspace_w=ws_w, regions=win.region_widths(),
+        tab_gaps=tab_gaps,
         chat_widest=chat_w > max(side_w, ws_w),
         scale=round(scale, 3),
         title_px=round(NODE_TITLE_PX * scale, 2),
@@ -258,10 +263,14 @@ def title_fit_samples(item: NodeItem, samples: list[str]) -> list[str]:
     return bad
 
 
-TABLE_HEAD = ("| window | chat | sidebar | workspace | chat widest | graph scale | node title px | "
-              "nodes fully in view | composer parts | clipped text |\n|---|---|---|---|---|---|---|---|---|---|")
+TABLE_HEAD = ("| window | regions sidebar / chat / workspace | chat pane | workspace card | tab gaps (min) | "
+              "graph scale | node title px | nodes fully in view | composer parts | clipped text |\n"
+              "|---|---|---|---|---|---|---|---|---|---|")
 
 
 def table_row(m: Metrics) -> str:
-    return (f"| {m.window} | {m.chat_w} | {m.sidebar_w} | {m.workspace_w} | {'yes' if m.chat_widest else 'no'} | "
+    s, c, w = m.regions
+    W = s + c + w
+    pct = f"{s} / {c} / {w} ({100 * s / W:.0f} / {100 * c / W:.0f} / {100 * w / W:.0f}%)"
+    return (f"| {m.window} | {pct} | {m.chat_w} | {m.workspace_w} | {min(m.tab_gaps)} | "
             f"{m.scale:.3f} | {m.title_px:.2f} | {m.nodes_visible} | {len(m.composer)}/6 | {len(m.clipped)} |")

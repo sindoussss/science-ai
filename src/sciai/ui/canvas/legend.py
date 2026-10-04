@@ -5,17 +5,16 @@ of squeezing or clipping text (the full legend is always in the tooltip)."""
 from __future__ import annotations
 
 from PyQt6.QtCore import QRectF, QSize, Qt
-from PyQt6.QtGui import QFontMetricsF, QPainter, QPaintEvent, QPen
+from PyQt6.QtGui import QFontMetricsF, QPainter, QPaintEvent
 from PyQt6.QtWidgets import QSizePolicy, QWidget
 
-from sciai.ui.theme.theme import STATUS_ICON, Theme
+from sciai.ui.chips import chip_label, chip_size, paint_chip
+from sciai.ui.theme.theme import Theme
 
 HINT = "Click to inspect · click again to pin"
 STATUSES = ("verified", "proposed", "failed", "invalidated", "hypothesis")
 H = 36
-PAD_X = 12
-CHIP_H = 20
-CHIP_PAD = 8
+PAD_X = 16
 GAP = 6
 
 
@@ -27,14 +26,13 @@ class Legend(QWidget):
         self.setFixedHeight(H)
         self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         self.setToolTip("Status: " + ", ".join(STATUSES) + "\n" + HINT)
-        self.font_ = theme.ui_font("size_legend_px", bold=True)
         self.hint_font = theme.ui_font("size_legend_px")
 
     def sizeHint(self) -> QSize:  # noqa: N802
         return QSize(self._full_width(), H)
 
     def _chip_w(self, status: str) -> float:
-        return QFontMetricsF(self.font_).horizontalAdvance(f"{STATUS_ICON[status]} {status}") + 2 * CHIP_PAD
+        return chip_size(self.theme, chip_label(status))[0]
 
     def _full_width(self) -> int:
         chips = sum(self._chip_w(s) for s in STATUSES) + GAP * (len(STATUSES) - 1)
@@ -62,18 +60,8 @@ class Legend(QWidget):
         p.fillRect(0, 0, self.width(), 1, t.c("border"))
         chips, hint = self.shown()
         x = float(PAD_X)
-        y = (H - CHIP_H) / 2 + 0.5
-        p.setFont(self.font_)
         for s in chips:
-            fg, bg = t.status_colors(s)
-            w = self._chip_w(s)
-            r = QRectF(x, y, w, CHIP_H)
-            p.setBrush(bg)
-            p.setPen(QPen(fg, 1, Qt.PenStyle.DashLine) if s == "invalidated" else Qt.PenStyle.NoPen)
-            p.drawRoundedRect(r, CHIP_H / 2, CHIP_H / 2)
-            p.setPen(fg)
-            p.drawText(r, Qt.AlignmentFlag.AlignCenter, f"{STATUS_ICON[s]} {s}")
-            x += w + GAP
+            x += paint_chip(p, t, x, H / 2, s, chip_label(s)).width() + GAP
         if hint:
             p.setFont(self.hint_font)
             p.setPen(t.c("text_secondary"))

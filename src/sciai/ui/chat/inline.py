@@ -12,7 +12,8 @@ from PyQt6.QtCore import QRectF, QSize, Qt
 from PyQt6.QtGui import QBrush, QFontMetricsF, QPainter, QPaintEvent, QPen
 from PyQt6.QtWidgets import QSizePolicy, QWidget
 
-from sciai.ui.theme.theme import STATUS_ICON, Theme
+from sciai.ui.chips import chip_label, chip_size, paint_chip
+from sciai.ui.theme.theme import Theme
 
 # `backticks` always become chips; node handles and dotted tool names are chipped automatically.
 _CHIP_RE = re.compile(r"`([^`]+)`|\b(n\d+)\b|\b([a-z]+\.[a-z_]+)\b")
@@ -141,14 +142,17 @@ class Column:
     title: str
     kind: str = "text"  # text | code | status
     min_w: float = 60
-    flex: bool = False
+    flex: bool = False  # takes the card's spare width; elides first when the card is narrow
+    shrink: bool = False  # keeps its natural width but may elide (down to min_w, never past its header)
 
 
 class TableCard(QWidget):
     """Rounded table: gray header row, thin dividers, expression cells as chips, status as soft chips."""
 
-    ROW_H = 36
-    PAD = 12
+    HEAD_H = 36
+    ROW_H = 40
+    RADIUS = 12
+    PAD = 10
 
     def __init__(self, theme: Theme, columns: list[Column], rows: list[list[str]], caption: str = "") -> None:
         super().__init__()
@@ -156,13 +160,19 @@ class TableCard(QWidget):
         self.font_ = theme.ui_font("size_ui_px")
         self.head_font = theme.ui_font("size_ui_px")
         self.mono = theme.mono_font("size_mono_px")
-        self.chip_font = theme.ui_font("size_node_small_px", bold=True)
+        self.chip_font = theme.chip_font()
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self.setFixedHeight(self.ROW_H * (len(rows) + 1) + 2)
+        self.setFixedHeight(self.HEAD_H + self.ROW_H * len(rows) + 2)
+
+    def _min_widths(self) -> list[float]:
+        """The narrowest each column may get: fixed columns never shrink; flex and shrink columns
+        go down to min_w, but never below their header."""
+        head = QFontMetricsF(self.head_font)
+        return [max(c.min_w, head.horizontalAdvance(c.title) + 2 * self.PAD) if (c.flex or c.shrink) else n
+                for c, n in zip(self.columns, self.natural_widths())]
 
     def minimumSizeHint(self) -> QSize:  # noqa: N802
-        nat = self.natural_widths()
-        return QSize(int(sum(c.min_w if c.flex else w for c, w in zip(self.columns, nat))) + 2, self.height())
+        return QSize(int(sum(self._min_widths())) + 2, self.height())
 
     def sizeHint(self) -> QSize:  # noqa: N802
         return QSize(640, self.height())
@@ -174,8 +184,7 @@ class TableCard(QWidget):
         if col.kind == "code":
             return QFontMetricsF(self.mono).horizontalAdvance(cell) + 2 * CHIP_PAD_X + 2 + 2 * self.PAD
         if col.kind == "status":
-            return QFontMetricsF(self.chip_font).horizontalAdvance(f"{STATUS_ICON.get(cell, '')} {cell}") + 14 \
-                + 2 * self.PAD
+            return chip_size(self.theme, chip_label(cell))[0] + 2 * self.PAD
         return QFontMetricsF(self.font_).horizontalAdvance(cell) + 2 * self.PAD
 
     def natural_widths(self) -> list[float]:
@@ -185,29 +194,49 @@ class TableCard(QWidget):
                 for i, c in enumerate(self.columns)]
 
     def _widths(self) -> list[float]:
-        """Fixed columns get their natural width; flex columns share what is left (and elide)."""
+        """Natural widths when they fit, the spare width going to the flex columns. When the card is
+        narrower than that, flex columns give up width first, then shrink columns (in proportion to
+        what each can give), each down to its minimum; fixed columns always keep their natural width."""
         nat = self.natural_widths()
-        fixed = sum(w for c, w in zip(self.columns, nat) if not c.flex)
-        flex = [c for c in self.columns if c.flex]
-        rest = max(0.0, self.width() - 2 - fixed)
-        return [w if not c.flex else max(c.min_w, rest / len(flex)) for c, w in zip(self.columns, nat)]
+        mins = self._min_widths()
+        avail = self.width() - 2
+        widths = list(nat)
+        spare = avail - sum(nat)
+        flex = [i for i, c in enumerate(self.columns) if c.flex]
+        if spare >= 0:
+            for i in flex:
+                widths[i] += spare / len(flex)
+            return widths
+        deficit = -spare
+        for group in (flex, [i for i, c in enumerate(self.columns) if c.shrink and not c.flex]):
+            room = sum(nat[i] - mins[i] for i in group)
+            if room <= 0:
+                continue
+            take = min(deficit, room)
+            for i in group:
+                widths[i] -= take * (nat[i] - mins[i]) / room
+            deficit -= take
+            if deficit <= 0:
+                break
+        return widths
 
     def elided(self) -> list[str]:
         """Cells that do not fit at the current width. Flex columns (long expressions) may elide by
-        design; anything listed here from a fixed column is real clipping (used by the metrics test)."""
+        design, as may shrink columns down to their minimum; anything else listed here is real
+        clipping (used by the metrics test)."""
         out = []
         widths = self._widths()
         x = 1.0
         for c, w in zip(self.columns, widths):
             x += w
-            if c.flex:
+            if c.flex or c.shrink:
                 continue
             if x > self.width() + 0.5:
                 out.append(f"table column {c.title!r} past the card edge")
         nat = self.natural_widths()
-        for c, w, n in zip(self.columns, widths, nat):
-            if not c.flex and w + 0.5 < n:
-                out.append(f"table column {c.title!r} narrower than its cells")
+        for c, w, n, m in zip(self.columns, widths, nat, self._min_widths()):
+            if w + 0.5 < (m if (c.flex or c.shrink) else n):
+                out.append(f"table column {c.title!r} narrower than {'its minimum' if c.flex or c.shrink else 'its cells'}")
         return out
 
     def plain(self) -> str:
@@ -219,13 +248,13 @@ class TableCard(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         outer = QRectF(0.5, 0.5, self.width() - 1, self.height() - 1)
-        r = 10.0
-        p.setPen(QPen(t.c("border_strong"), 1))
-        p.setBrush(QBrush(t.c("app_bg")))
+        r = float(self.RADIUS)
+        p.setPen(QPen(t.c("border"), 1))
+        p.setBrush(QBrush(t.c("table_body")))
         p.drawRoundedRect(outer, r, r)
         # header band (rounded top only)
         p.save()
-        p.setClipRect(QRectF(0, 0, self.width(), self.ROW_H))
+        p.setClipRect(QRectF(0, 0, self.width(), self.HEAD_H))
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(QBrush(t.c("table_header_bg")))
         p.drawRoundedRect(outer.adjusted(0.5, 0.5, -0.5, 0), r, r)
@@ -237,10 +266,10 @@ class TableCard(QWidget):
         for col, w in zip(self.columns, widths):
             align = Qt.AlignmentFlag.AlignVCenter | (Qt.AlignmentFlag.AlignRight if col.kind == "num"
                                                     else Qt.AlignmentFlag.AlignLeft)
-            p.drawText(QRectF(x + self.PAD, 0, w - 2 * self.PAD, self.ROW_H), align, col.title)
+            p.drawText(QRectF(x + self.PAD, 0, w - 2 * self.PAD, self.HEAD_H), align, col.title)
             x += w
         for i, row in enumerate(self.rows):
-            top = self.ROW_H * (i + 1)
+            top = self.HEAD_H + self.ROW_H * i
             p.setPen(QPen(t.c("border"), 1))
             p.drawLine(QRectF(1, top, self.width() - 2, 0).topLeft(), QRectF(1, top, self.width() - 2, 0).topRight())
             x = 1.0
@@ -266,17 +295,7 @@ class TableCard(QWidget):
             p.setPen(t.c("chip_code_text"))
             p.drawText(chip.adjusted(CHIP_PAD_X, 0, -CHIP_PAD_X, 0), Qt.AlignmentFlag.AlignVCenter, text)
         elif col.kind == "status":
-            fg, bg = t.status_colors(cell)
-            p.setFont(self.chip_font)
-            fm = QFontMetricsF(self.chip_font)
-            label = f"{STATUS_ICON.get(cell, '')} {cell}"
-            w = min(rect.width(), fm.horizontalAdvance(label) + 14)
-            chip = QRectF(rect.left(), rect.center().y() - 10, w, 20)
-            p.setBrush(QBrush(bg))
-            p.setPen(QPen(fg, 1, Qt.PenStyle.DashLine) if cell == "invalidated" else Qt.PenStyle.NoPen)
-            p.drawRoundedRect(chip, 10, 10)
-            p.setPen(fg)
-            p.drawText(chip, Qt.AlignmentFlag.AlignCenter, label)
+            paint_chip(p, t, rect.left(), rect.center().y(), cell, chip_label(cell))
         else:
             p.setFont(self.font_)
             p.setPen(t.c("table_text"))
@@ -304,7 +323,7 @@ class PlotCard(QWidget):
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         p.setPen(QPen(t.c("border"), 1))
         p.setBrush(QBrush(t.c("panel")))
-        p.drawRoundedRect(QRectF(0.5, 0.5, self.width() - 1, self.height() - 1), 10, 10)
+        p.drawRoundedRect(QRectF(0.5, 0.5, self.width() - 1, self.height() - 1), 12, 12)
         p.setFont(t.ui_font("size_small_px"))
         p.setPen(t.c("text_title"))
         p.drawText(QRectF(0, 10, self.width(), 18), Qt.AlignmentFlag.AlignHCenter, self.title)

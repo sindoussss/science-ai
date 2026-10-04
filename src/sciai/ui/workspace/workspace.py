@@ -71,7 +71,7 @@ class Workspace(QWidget):
         lay.setSpacing(0)
 
         head = QHBoxLayout()
-        head.setContentsMargins(14, 12, 14, 6)
+        head.setContentsMargins(16, 16, 16, 10)
         head.setSpacing(6)
         mark = QLabel()
         mark.setPixmap(icon("notebook", t.hex("text_title")).pixmap(QSize(16, 16)))
@@ -83,7 +83,7 @@ class Workspace(QWidget):
         lay.addLayout(head)
 
         tabs = QHBoxLayout()
-        tabs.setContentsMargins(10, 0, 12, 8)
+        tabs.setContentsMargins(12, 0, 12, 8)
         tabs.setSpacing(4)
         self.graph_tab = QToolButton()
         self.graph_tab.setObjectName("pillTab")

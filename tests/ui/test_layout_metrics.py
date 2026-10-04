@@ -8,33 +8,23 @@ pytest.importorskip("PyQt6")
 from tests.ui.metrics import (  # noqa: E402
     NODE_TABS,
     TABLE_HEAD,
-    fault_runner,
-    fault_script,
     measure,
-    run_fault_window,
     table_row,
     title_fit_samples,
 )
 
 SIZES = [(1200, 720), (1440, 900)]
+
+
+def expected_sidebar(w: int) -> int:
+    return max(200, min(240, round(0.17 * w)))
+
+
+def expected_workspace(w: int) -> int:
+    return max(440, min(640, round(0.40 * w)))
 SAMPLE_TITLES_22 = ["Second derivative test", "Integrate over [0, pi]", "Solve quadratic system",
                     "Mean free path of N2 g", "Differentiate x^2 sinx", "Taylor series at x = 0"]
 _rows: list[str] = []
-
-
-@pytest.fixture
-def fault_window(make_rt, runner):
-    wins = []
-
-    def open_(size):
-        rt = make_rt(fault_script(), run=fault_runner(runner))
-        win = run_fault_window(rt, size)
-        wins.append(win)
-        return win
-
-    yield open_
-    for w in wins:
-        w.close()
 
 
 @pytest.mark.parametrize("size", SIZES, ids=[f"{w}x{h}" for w, h in SIZES])
@@ -46,11 +36,13 @@ def test_layout_metrics(fault_window, size):
     if m.clipped:
         print("clipped:\n  " + "\n  ".join(m.clipped))
 
-    assert m.sidebar_w == 220
-    assert 340 <= m.workspace_w <= 640
-    assert m.workspace_w == 420  # default
-    assert m.chat_w >= 440
-    assert m.chat_widest
+    side, chat, ws = m.regions
+    W = size[0]
+    assert side + chat + ws == W
+    assert side == expected_sidebar(W)
+    assert abs(ws - expected_workspace(W)) <= 1
+    assert chat >= 440 and m.chat_w >= 440
+    assert m.tab_gaps == [18, 18, 18, 18]
     assert 0.92 <= m.scale <= 1.3
     assert m.title_px >= 12
     assert m.composer == ["status strip", "+", "tools", "mic", "send", "input"]
@@ -67,10 +59,10 @@ def test_fit_button_may_go_below_floor_until_next_layout(fault_window):
     from tests.ui.metrics import pump, setup_app
 
     win = fault_window((1200, 720))
-    win.main_split.last_px = 340 + 12  # narrowest workspace: this graph no longer fits at the floor
-    win.main_split._apply_px()
-    pump(setup_app(), lambda: win.workspace_card.width() == 340)
     g = win.graph
+    g.setFixedHeight(240)  # a short canvas: this graph no longer fits at the floor
+    pump(setup_app(), lambda: g.height() == 240)
+    g._rebuild()
     assert g.scale_factor() >= 0.92
     g.fit_all()
     assert g.scale_factor() < 0.92
@@ -127,11 +119,11 @@ def test_ctrl_g_collapses_the_workspace_and_chat_takes_the_room(fault_window):
     pump(app, lambda: not win.workspace_pane.isVisible())
     pump(app, lambda: win.chat.width() > chat_before + 300)
     QTest.keyClick(win, Qt.Key.Key_G, Qt.KeyboardModifier.ControlModifier)
-    pump(app, lambda: win.workspace_pane.isVisible() and win.workspace_card.width() == 420)
+    pump(app, lambda: win.workspace_pane.isVisible() and win.region_widths()[2] == expected_workspace(1200))
     assert win.chat.width() == chat_before
 
 
-def test_workspace_drag_is_clamped_to_340_640_and_kept_on_resize(fault_window):
+def test_workspace_drag_is_clamped_to_440_640_and_kept_on_resize(fault_window):
     from tests.ui.metrics import pump, setup_app
 
     win = fault_window((1440, 900))
@@ -140,17 +132,22 @@ def test_workspace_drag_is_clamped_to_340_640_and_kept_on_resize(fault_window):
     total = sum(sp.sizes())
     sp.moveSplitter(total - 900, 1)  # try to make the workspace far too wide
     pump(app, lambda: True)
-    assert win.workspace_card.width() <= 640
+    assert win.region_widths()[2] <= 640
     sp.moveSplitter(total - 100, 1)  # and far too narrow
     pump(app, lambda: True)
-    assert win.workspace_card.width() >= 340
-    sp.moveSplitter(total - 520, 1)
+    assert win.region_widths()[2] >= 440
+    tabs = win.node_panel.tabs
+    win.workspace.show_node_tab()
     pump(app, lambda: True)
-    kept = win.workspace_card.width()
+    assert min(tabs.label_gaps()) >= 12  # narrowest workspace: labels still apart and unelided
+    assert [b.text() for b in tabs.buttons] == NODE_TABS
+    sp.moveSplitter(total - 560, 1)
+    pump(app, lambda: True)
+    share = win.region_widths()[2] / win.width()
     win.resize(1300, 800)
     pump(app, lambda: win.width() == 1300)
-    assert win.workspace_card.width() == kept  # the chat absorbs window resizes
-    assert win.chat.width() >= 440
+    assert abs(win.region_widths()[2] - round(share * 1300)) <= 1  # the dragged share is kept
+    assert win.region_widths()[1] >= 440
 
 
 def test_view_graph_focuses_the_answer(fault_window):

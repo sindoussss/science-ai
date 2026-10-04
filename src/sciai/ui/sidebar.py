@@ -1,12 +1,12 @@
 """Left card, mirroring the reference: wordmark, project row, New / Customize / Files,
-the "Active" session list (hollow bullets, soft-pill selection, running-count badge),
+the "Active" session list (hollow bullets, medium-weight selection, running-count badge),
 a collapsible knowledge base with green checks, and a settings gear pinned bottom-left."""
 from __future__ import annotations
 
 from pathlib import Path
 
 from PyQt6.QtCore import QSize, Qt, pyqtSignal
-from PyQt6.QtGui import QAction, QEnterEvent, QMouseEvent, QPainter, QPaintEvent
+from PyQt6.QtGui import QAction, QEnterEvent, QFont, QMouseEvent, QPainter, QPaintEvent
 from PyQt6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -33,7 +33,8 @@ ROW_H = 32
 
 
 class ListRow(QWidget):
-    """A plain sidebar row: small icon, elided text, optional count badge. Selected = soft pill."""
+    """A plain sidebar row: small icon, elided text, optional count badge. Selected = medium-weight
+    text with no fill (as in the reference); hover = soft pill."""
 
     clicked = pyqtSignal()
 
@@ -46,7 +47,7 @@ class ListRow(QWidget):
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setToolTip(tooltip or text)
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(8, 0, 6, 0)
+        lay.setContentsMargins(5, 0, 6, 0)
         lay.setSpacing(6)
         mark = QLabel()
         mark.setPixmap(icon(icon_name, theme.hex(icon_color)).pixmap(QSize(14, 14)))
@@ -56,8 +57,10 @@ class ListRow(QWidget):
         lay.addWidget(self.label, 1)
         self.badge = QLabel()
         self.badge.setObjectName("badge")
+        self.badge.setFixedHeight(18)  # a small gray count, not a row-high box
+        self.badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.badge.hide()
-        lay.addWidget(self.badge)
+        lay.addWidget(self.badge, 0, Qt.AlignmentFlag.AlignVCenter)
 
     def set_badge(self, count: int | None) -> None:
         self.badge.setVisible(count is not None)
@@ -65,6 +68,10 @@ class ListRow(QWidget):
 
     def set_selected(self, on: bool) -> None:
         self.selected = on
+        f = self.label.font()
+        f.setWeight(QFont.Weight.Medium if on else QFont.Weight.Normal)
+        self.label.setFont(f)
+        self.label._elide()
         self.update()
 
     def enterEvent(self, event: QEnterEvent) -> None:  # noqa: N802
@@ -80,12 +87,12 @@ class ListRow(QWidget):
             self.clicked.emit()
 
     def paintEvent(self, event: QPaintEvent) -> None:  # noqa: N802
-        if not (self.selected or self._hover):
+        if not self._hover:
             return
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(self.theme.c("bubble_user" if self.selected else "hover"))
+        p.setBrush(self.theme.c("hover"))
         p.drawRoundedRect(self.rect().adjusted(0, 1, 0, -1), 8, 8)
         p.end()
 
@@ -110,17 +117,17 @@ class Sidebar(QWidget):
         ink = t.hex("text")
 
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(10, 16, 10, 10)
+        lay.setContentsMargins(10, 12, 10, 10)
         lay.setSpacing(0)
         brand = QLabel(PRODUCT_NAME)
         brand.setObjectName("brand")
-        brand.setContentsMargins(6, 0, 0, 0)
+        brand.setContentsMargins(1, 0, 0, 0)
         lay.addWidget(brand)
         tag = QLabel(SUBTITLE)
         tag.setObjectName("secondary")
-        tag.setContentsMargins(6, 0, 0, 0)
+        tag.setContentsMargins(1, 0, 0, 0)
         lay.addWidget(tag)
-        lay.addSpacing(16)
+        lay.addSpacing(12)
 
         # Project row: back arrow, current session name, chevron with the session menu.
         proj = QHBoxLayout()
@@ -184,7 +191,7 @@ class Sidebar(QWidget):
         bl.setSpacing(0)
         active = QLabel("Active")
         active.setObjectName("secondary")
-        active.setContentsMargins(4, 0, 0, 4)
+        active.setContentsMargins(0, 0, 0, 4)
         bl.addWidget(active)
         self.sessions_box = QVBoxLayout()
         self.sessions_box.setSpacing(0)

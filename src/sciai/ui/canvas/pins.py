@@ -6,19 +6,9 @@ from PyQt6.QtCore import QEvent, QObject, QRectF, Qt, pyqtSignal
 from PyQt6.QtGui import QKeyEvent, QPainter, QPaintEvent
 from PyQt6.QtWidgets import QFrame, QHBoxLayout, QPlainTextEdit, QPushButton, QVBoxLayout, QWidget
 
+from sciai.ui.shell import add_soft_shadow
+
 PIN_D = 22  # marker diameter on the canvas and in the popover
-
-
-def add_soft_shadow(w: QWidget) -> None:
-    """Popover shadow (blur 18, y 4, 10% black). Fine on small popovers; never put this on a card."""
-    from PyQt6.QtGui import QColor
-    from PyQt6.QtWidgets import QGraphicsDropShadowEffect
-
-    fx = QGraphicsDropShadowEffect(w)
-    fx.setBlurRadius(18)
-    fx.setOffset(0, 4)
-    fx.setColor(QColor(0, 0, 0, 26))
-    w.setGraphicsEffect(fx)
 
 
 class PinDot(QWidget):

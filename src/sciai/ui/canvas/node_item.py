@@ -4,16 +4,17 @@ from __future__ import annotations
 from typing import Callable
 
 from PyQt6.QtCore import QPointF, QRectF, Qt
-from PyQt6.QtGui import QBrush, QFontMetrics, QFontMetricsF, QPainter, QPainterPath, QPen
+from PyQt6.QtGui import QBrush, QFontMetricsF, QPainter, QPainterPath, QPen
 from PyQt6.QtWidgets import QGraphicsItem, QGraphicsSceneMouseEvent, QStyleOptionGraphicsItem, QWidget
 
 from sciai.graph.model import Node, NodeType, Status
 from sciai.ui.canvas.layout import NODE_H, NODE_W, PILL_H, PILL_INSET, PLOT_H
 from sciai.ui.canvas.pins import PIN_D
-from sciai.ui.theme.theme import STATUS_ICON, Theme
+from sciai.ui.chips import chip_label, paint_chip
+from sciai.ui.theme.theme import Theme
 
 PAD = 12
-CHIP_H = 18
+CHIP_H = 20  # status chip height (12px text + 2px/8px padding); it straddles the top border
 TITLE_Y, TITLE_H = 12, 18  # 12px top padding
 BODY_Y, BODY_H = 34, 18  # ends at 52 = 64 - 12 bottom padding
 
@@ -73,20 +74,9 @@ class NodeItem(QGraphicsItem):
         self.update()
 
     # painting ------------------------------------------------------------
-    def _chip(self, p: QPainter, right: float, top: float, status: str, label: str, h: float = CHIP_H) -> float:
-        t = self.theme
-        fg, bg = t.status_colors(status)
-        p.setFont(t.ui_font("size_node_small_px", bold=True))
-        fm = QFontMetrics(p.font())
-        text = f"{STATUS_ICON.get(status, '')} {label}"
-        w = fm.horizontalAdvance(text) + 14
-        rect = QRectF(right - w, top, w, h)
-        p.setBrush(QBrush(bg))
-        p.setPen(QPen(fg, 1, Qt.PenStyle.DashLine) if status == "invalidated" else Qt.PenStyle.NoPen)
-        p.drawRoundedRect(rect, h / 2, h / 2)
-        p.setPen(fg)
-        p.drawText(rect, Qt.AlignmentFlag.AlignCenter, text)
-        return w
+    def _chip(self, p: QPainter, right: float, cy: float, status: str, label: str) -> float:
+        """Status chip with its right edge at ``right``, centered on ``cy``; returns its width."""
+        return paint_chip(p, self.theme, right, cy, status, chip_label(status, label), right_aligned=True).width()
 
     def paint(self, p: QPainter, option: QStyleOptionGraphicsItem, widget: QWidget | None = None) -> None:
         t = self.theme
@@ -117,7 +107,7 @@ class NodeItem(QGraphicsItem):
             return
 
         # Status chip straddles the top border (right), so the title row keeps the full inner width.
-        self._chip(p, w - PAD, -CHIP_H / 2, status, status)
+        self._chip(p, w - PAD, 0, status, status)
 
         # Title row: 13px semibold, full inner width; elided only past it (tooltip has the full text).
         shown, _fits = self.title_layout()
@@ -170,7 +160,7 @@ class NodeItem(QGraphicsItem):
         n = self.node
         outcome = (n.result or {}).get("outcome", "inconclusive")
         chip_status = {"pass": "verified", "fail": "failed"}.get(outcome, "inconclusive")
-        cw = self._chip(p, w - 3, 3, chip_status, outcome, h=h - 6)
+        cw = self._chip(p, w - 3, h / 2, chip_status, outcome)
         font = t.ui_font("size_node_small_px")
         p.setFont(font)
         p.setPen(t.c("text_secondary"))
