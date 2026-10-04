@@ -3,12 +3,15 @@
     python scripts/live_check.py --model qwen2.5:7b-instruct-q4_K_M
     python scripts/live_check.py --model qwen3:8b --think        # reasoning mode on
     python scripts/live_check.py --model qwen2.5:7b-instruct-q4_K_M --suite physics
+    python scripts/live_check.py --model qwen2.5:7b-instruct-q4_K_M --suite data
 
 Runs on a fresh, temporary knowledge store (your ~/.sciai store is never touched), so the last
 problem, a repeat of the first, measures knowledge reuse from this run only. Prints a table and
 saves it to results/<model>.md, or results/<model>-physics.md for the physics suite (characters
 a Windows file name can't hold become "-"). The physics suite accepts every default assumption
-automatically, as nobody is there to tick the checklist, and lists them in the report.
+automatically, as nobody is there to tick the checklist, and lists them in the report. The data
+suite first imports the three files in tests/fixtures/data (CSV, TSV and Excel) into that store
+and checks its answers against R's reference values (to 4 significant digits).
 
 Columns: pass (verified and the expected value), JSON retries (re-asks after an invalid reply),
 ladder (furthest failure-ladder stage any step reached), seconds, model calls.
@@ -46,6 +49,7 @@ class Problem:
     reuse_of: str | None = None  # a repeat: must be answered from the store with no model call
     note: str = ""
     signed: bool = True  # False: a current's sign is a convention, so only the magnitude counts
+    rel_tol: float = 1e-6  # data answers are checked against references given to 4-5 digits
 
 
 PROBLEMS = [
@@ -80,7 +84,25 @@ PHYSICS_PROBLEMS = [
             "land? Use g = 9.80665 m/s^2.", (400 * math.sin(math.radians(60)) / 9.80665,),
             "reused, 0 model calls", reuse_of="projectile"),
 ]
-SUITES = {"math": PROBLEMS, "physics": PHYSICS_PROBLEMS}
+DATA_DIR = ROOT / "tests" / "fixtures" / "data"
+DATA_FILES = ("trial.csv", "plantgrowth.tsv", "sleep.xlsx")
+DATA_PROBLEMS = [
+    Problem("welch", "In trial.csv, is the score different between groups A and B?", (-5.23456, 6.39958e-06),
+            "t = -5.235, p = 6.4e-06", rel_tol=1e-4, note="Welch t-test; diagnostics become assumptions"),
+    Problem("anova", "In plantgrowth.tsv, does the weight differ between the three groups?", (4.846, 0.01591),
+            "F = 4.846, p = 0.01591", rel_tol=1e-3, note="one-way ANOVA; R's PlantGrowth"),
+    Problem("regression", "In trial.csv, how does response change with dose? Give the slope.", (0.791591,),
+            "slope = 0.7916", rel_tol=1e-4, note="least squares; slope with its CI"),
+    Problem("excel", "In sleep.xlsx, does the extra sleep differ between drug D1 and drug D2?",
+            (1.8608, 0.07939), "|t| = 1.861, p = 0.07939", rel_tol=1e-3, signed=False,
+            note="Welch t-test on an Excel sheet; R's sleep; the sign depends on the group order"),
+    Problem("means", "What is the mean score in each group of trial.csv?", (47.0645, 54.4745),
+            "A 47.06, B 54.47", rel_tol=1e-4, note="data.group or data.describe"),
+    Problem("repeat", "In trial.csv, is the score different between groups A and B?", (-5.23456, 6.39958e-06),
+            "reused, 0 model calls", reuse_of="welch", rel_tol=1e-4),
+]
+SUITES = {"math": PROBLEMS, "physics": PHYSICS_PROBLEMS, "data": DATA_PROBLEMS}
+SUITE_FILES = {"data": DATA_FILES}
 
 
 class CountingLLM:
@@ -132,15 +154,27 @@ def _numbers(result: Any) -> list[float]:
         return [float(v) for v in result.get("value") or []]
     if kind == "list":
         return [v for item in result.get("value") or [] for v in _numbers(item)]
+    if kind == "stats":  # the statistic, p, the effect and its CI, regression coefficients
+        out = [result["statistic"]["value"], result["p"]]
+        effect = result.get("effect") or {}
+        out += [effect["value"], *(effect.get("ci") or [])] if "value" in effect else []
+        for c in result.get("coefficients") or []:
+            out += [c["estimate"], c["p"], *(c.get("ci") or [])]
+        return [float(v) for v in out if isinstance(v, (int, float))]
+    if kind == "table":
+        return [float(v) for row in result.get("rows") or [] for v in row
+                if isinstance(v, (int, float)) and not isinstance(v, bool)]
+    if kind == "adjusted":
+        return [float(v) for v in result.get("p_adjusted") or []]
     return []
 
 
-def _close(a: float, b: float, signed: bool = True) -> bool:
-    """``b`` within 1e-6 of the expected ``a`` (relative; absolute 1e-9 only when ``a`` is 0, so a
-    photon energy of 4e-19 J is not "close" to 0). Unsigned when the sign is a convention."""
+def _close(a: float, b: float, signed: bool = True, rel_tol: float = 1e-6) -> bool:
+    """``b`` within ``rel_tol`` of the expected ``a`` (relative; absolute 1e-9 only when ``a`` is 0, so
+    a photon energy of 4e-19 J is not "close" to 0). Unsigned when the sign is a convention."""
     if not signed:
         a, b = abs(a), abs(b)
-    return math.isclose(a, b, rel_tol=1e-6, abs_tol=1e-9 if a == 0 else 0.0)
+    return math.isclose(a, b, rel_tol=rel_tol, abs_tol=1e-9 if a == 0 else 0.0)
 
 
 def _furthest_ladder(rt: Any, session_id: str) -> str:
@@ -172,7 +206,7 @@ def run_problem(rt: Any, llm: CountingLLM, p: Problem) -> Row:
     final = rt.engine.resolve(res.final_node)
     for nid in (final.tool_inputs or {}).get("answer_nodes", []):
         row.values += _numbers(rt.engine.resolve(nid).result)
-    missing = [e for e in p.expected if not any(_close(e, v, p.signed) for v in row.values)]
+    missing = [e for e in p.expected if not any(_close(e, v, p.signed, p.rel_tol) for v in row.values)]
     if missing:
         row.why = f"expected {p.expect_text}, got {row.values or 'no numeric value'}"
     elif not res.verified:
@@ -237,6 +271,15 @@ def ollama_preflight(cfg: Any) -> tuple[str | None, str]:
     return None, version
 
 
+def import_files(rt: Any, names: tuple[str, ...], folder: Path = DATA_DIR) -> str:
+    """Import the suite's data files (no model call) and describe them for the report."""
+    out = []
+    for name in names:
+        rec = rt.import_file(folder / name).record
+        out.append(f"{rec.name} ({rec.rows} x {rec.columns})")
+    return ", ".join(out)
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     p.add_argument("--model", required=True, metavar="TAG", help="Ollama model tag, e.g. qwen2.5:7b-instruct-q4_K_M")
@@ -244,7 +287,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
                    help="reasoning mode on/off (default: the config's [model] think)")
     p.add_argument("--out", default=str(ROOT / "results"), help="folder for <model>.md (default: results/)")
     p.add_argument("--suite", choices=sorted(SUITES), default="math",
-                   help="math (Phase 1 problems, the default) or physics (units, constants, ODEs, circuits)")
+                   help="math (Phase 1 problems, the default), physics (units, constants, ODEs, circuits) or "
+                        "data (tests and regression on CSV, TSV and Excel files)")
     return p.parse_args(argv)
 
 
@@ -272,10 +316,14 @@ def main(argv: list[str] | None = None) -> int:
             "date": datetime.now().strftime("%Y-%m-%d %H:%M")}
     rows: list[Row] = []
     with tempfile.TemporaryDirectory(prefix="sciai-live-") as tmp:
+        cfg.data.data_dir = str(Path(tmp) / "datasets")  # the imported copies go with the temporary store
         rt = build_runtime(cfg, db_path=Path(tmp) / "live.db")
         llm = CountingLLM(rt.llm)
         rt.controller.llm = llm
         try:
+            imported = import_files(rt, SUITE_FILES.get(args.suite, ()))
+            if imported:
+                meta["datasets"] = imported
             for i, p in enumerate(problems, 1):
                 print(f"[{i}/{len(problems)}] {p.key}: {p.question}", flush=True)
                 row = run_problem(rt, llm, p)

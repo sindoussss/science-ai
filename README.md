@@ -4,13 +4,17 @@ A fully local, chat-first research system. One local model (served by Ollama) de
 deterministic tools (SymPy, NumPy/SciPy, mpmath, pint) do every calculation; a graph records every
 step, its status and the evidence that verified it.
 
-Phase 1 covers mathematics. Phase 2 (this branch) adds physics and engineering: values with
-units, physical constants (CODATA 2022 from the pinned SciPy), ODEs (closed form and numeric, each
-checking the other), linear systems and DC circuits, with modelling assumptions you confirm or
-reject. Design: [docs/design.md](docs/design.md).
+Phase 1 covers mathematics. Phase 2 adds physics and engineering: values with units, physical
+constants (CODATA 2022 from the pinned SciPy), ODEs (closed form and numeric, each checking the
+other), linear systems and DC circuits, with modelling assumptions you confirm or reject. Phase 3
+(this branch) adds data: import CSV, TSV and Excel files, then describe, filter, group, test
+(t-tests, Mann-Whitney, ANOVA, Kruskal-Wallis, chi-square, correlation) and fit (least squares),
+with effect sizes, confidence intervals, assumption diagnostics, Holm correction when several tests
+run on the same data, and plots. Design: [docs/design.md](docs/design.md).
 
-Opening a Phase 1 knowledge store upgrades it in place to schema v2. A backup is written next to
-it first (`knowledge.db.v1.bak`); if the upgrade fails, the store is left as it was.
+Opening an older knowledge store upgrades it in place, one schema version at a time (v1 to v2 to
+v3). A backup is written next to it first (`knowledge.db.v1.bak`, `knowledge.db.v2.bak`); if an
+upgrade fails, that step is rolled back and the store keeps working at its previous version.
 
 ## Setup on Windows (PowerShell)
 
@@ -73,6 +77,34 @@ Set-Content "$HOME\.sciai\config.toml" "[model]`nname = `"qwen3:8b`"`nthink = fa
 
 The knowledge store is `$HOME\.sciai\knowledge.db`.
 
+## Working with data
+
+Add a file with the **+** button or **Files > Add file...**, or drop it anywhere on the window.
+`.csv`, `.tsv`, `.tab`, `.xlsx` and `.xlsm` files are imported: the file is hashed and a copy is
+kept in `$HOME\.sciai\datasets` (so editing or deleting the original can't change an analysis),
+then it is read twice, by pandas and by a second reader (Python's csv module or openpyxl), and the
+import is refused unless both reads agree. Other files are copied to `$HOME\.sciai\files`.
+
+Then ask about the file by name: "In trial.csv, is the score different between groups A and B?"
+
+- The model sees the column names, types, units, missing counts and the levels of small categorical
+  columns. It never sees row values; every number comes from a tool.
+- Each test reports its statistic, p value, effect size with a confidence interval, and alpha
+  (0.05, set in `[data] alpha`, or a different one named in the question). It is checked
+  independently (a direct recomputation, then a permutation test or statsmodels).
+- The test's assumptions (normality, equal variances, expected counts, independence) become
+  assumption nodes with their diagnostics. One the data speak against is marked doubtful, the
+  answer carries a caution, and the model is told the robust alternative.
+- Several tests on the same file are a family: the answer reports Holm-adjusted p values too.
+- Importing the same bytes again reuses everything computed on them, with no model call. A
+  changed cell is a new dataset, and answers about the old one are not reused.
+- **Files** lists the imported datasets (rows x columns). **Remove** deletes one and invalidates
+  every result, plot and answer built on it, in every session.
+- In the workspace, a dataset (or any step that read one) has a **Data** tab with the schema and
+  the first 50 rows; a plot has a **Plot** tab with PNG and SVG export.
+
+`[data] max_rows` (5,000,000) and `[data] max_file_mb` (400) refuse files too large to load safely.
+
 **Thinking models.** `think = false` (the default) turns reasoning off for models that have it
 (qwen3, deepseek-r1). Any `<think>...</think>` text a model still writes is removed before its JSON
 action is parsed. If you turn thinking on, also raise `num_predict` (for example to 2048), because
@@ -95,6 +127,7 @@ The UI tests open real (hidden) windows. On a machine without a display, set
 python scripts\live_check.py --model qwen2.5:7b-instruct-q4_K_M
 python scripts\live_check.py --model qwen3:8b --think
 python scripts\live_check.py --model qwen2.5:7b-instruct-q4_K_M --suite physics
+python scripts\live_check.py --model qwen2.5:7b-instruct-q4_K_M --suite data
 ```
 
 It runs six fixed problems (a definite integral, an equation, a unit conversion, an ODE, one hard
@@ -108,6 +141,11 @@ hold them). If Ollama isn't running or the model isn't pulled, it says so and ex
 temperature, a photon energy from constants, an RC discharge, a series/parallel circuit, and a
 repeat of the first) and saves `results\<model>-physics.md`. Nobody is there to tick the
 assumption checklist, so the defaults are accepted and listed in the report.
+
+`--suite data` imports the three files in `tests\fixtures\data` (a CSV, R's PlantGrowth as TSV and
+R's sleep as an Excel sheet) and asks five questions about them (a Welch t-test, a one-way ANOVA, a
+regression slope, a t-test on the Excel sheet, group means) plus a repeat of the first. Answers are
+checked against R's reference values to 4 significant digits. It saves `results\<model>-data.md`.
 
 ## Linux / macOS
 
