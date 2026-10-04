@@ -1,5 +1,5 @@
--- Science AI knowledge store, schema version 2 (v2 adds the 'assumption' node type).
--- A v1 store is migrated on open by sciai.store.migrate.
+-- Science AI knowledge store, schema version 3 (v2 adds the 'assumption' node type,
+-- v3 adds the datasets table). Older stores are migrated on open by sciai.store.migrate.
 -- The database is global across sessions: cascades cross session boundaries.
 
 CREATE TABLE IF NOT EXISTS meta (
@@ -142,3 +142,23 @@ CREATE TABLE IF NOT EXISTS notices (
     created_at   REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_notices_session ON notices(session_id, seen);
+
+-- Imported data files (v3). A dataset is immutable and content-addressed: ``id`` is a hash
+-- of the file's SHA-256, its format and the parse options, so the same bytes read the same
+-- way are always the same dataset, and a changed file is a new one. The file is copied to
+-- ``stored_path`` (named by its SHA-256) and never read from its original path again.
+-- Several rows may share a name; the most recently imported one is the current dataset.
+CREATE TABLE IF NOT EXISTS datasets (
+    id            TEXT PRIMARY KEY,
+    sha256        TEXT NOT NULL,
+    name          TEXT NOT NULL,
+    format        TEXT NOT NULL CHECK (format IN ('csv','tsv','xlsx')),
+    options       TEXT NOT NULL,      -- JSON: delimiter, decimal mark, encoding, sheet, NA tokens
+    stored_path   TEXT NOT NULL,
+    original_path TEXT,
+    rows          INTEGER NOT NULL CHECK (rows >= 0),
+    columns       INTEGER NOT NULL CHECK (columns >= 0),
+    schema        TEXT NOT NULL,      -- JSON: [{name, type, unit, missing, levels?}]
+    imported_at   REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_datasets_name ON datasets(name, imported_at);

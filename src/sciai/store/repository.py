@@ -2,7 +2,10 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
+from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Iterable
 
 from sciai.graph.model import (
@@ -64,6 +67,47 @@ def node_from_row(row: sqlite3.Row) -> Node:
         created_at=row["created_at"],
         updated_at=row["updated_at"],
     )
+
+
+@dataclass
+class DatasetRecord:
+    """An imported data file (see the datasets table in schema.sql)."""
+
+    id: str
+    sha256: str
+    name: str
+    format: str
+    options: dict[str, Any]
+    stored_path: str
+    rows: int
+    columns: int
+    schema: list[dict[str, Any]]
+    original_path: str | None = None
+    imported_at: float = field(default_factory=now)
+
+    def schema_text(self, max_levels: int = 6) -> str:
+        """What the model sees: names, types, units, missing counts and the levels of small
+        categorical columns. Never row values."""
+        parts = []
+        for col in self.schema:
+            bits = [col["type"]]
+            if col.get("unit"):
+                bits.append(f"unit {col['unit']}")
+            if col.get("missing"):
+                bits.append(f"{col['missing']} missing")
+            levels = col.get("levels")
+            if levels:
+                shown = ", ".join(map(str, levels[:max_levels])) + (", ..." if len(levels) > max_levels else "")
+                bits.append(f"levels {shown}")
+            parts.append(f"{col['name']} ({'; '.join(bits)})")
+        return f"{self.name}: {self.rows} rows; columns: " + ", ".join(parts)
+
+
+def _dataset_from_row(row: sqlite3.Row) -> DatasetRecord:
+    return DatasetRecord(id=row["id"], sha256=row["sha256"], name=row["name"], format=row["format"],
+                         options=json.loads(row["options"]), stored_path=row["stored_path"],
+                         original_path=row["original_path"], rows=row["rows"], columns=row["columns"],
+                         schema=json.loads(row["schema"]), imported_at=row["imported_at"])
 
 
 class Repository:
@@ -366,3 +410,45 @@ class Repository:
     def mark_notices_seen(self, session_id: str) -> None:
         with self.db.tx() as c:
             c.execute("UPDATE notices SET seen=1 WHERE session_id=?", (session_id,))
+
+    # ---------------------------------------------------------------- datasets
+    def add_dataset(self, rec: DatasetRecord) -> DatasetRecord:
+        """Insert, or for a re-import of the same bytes read the same way, refresh its name and
+        import time so it becomes the current dataset of that name again."""
+        with self.db.tx() as c:
+            c.execute(
+                "INSERT INTO datasets (id, sha256, name, format, options, stored_path, original_path, rows, "
+                "columns, schema, imported_at) VALUES (?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET "
+                "name=excluded.name, original_path=excluded.original_path, imported_at=excluded.imported_at",
+                (rec.id, rec.sha256, rec.name, rec.format, json.dumps(rec.options, sort_keys=True),
+                 rec.stored_path, rec.original_path, rec.rows, rec.columns, json.dumps(rec.schema), rec.imported_at))
+        return rec
+
+    def dataset(self, dataset_id: str) -> DatasetRecord | None:
+        row = self.db.query_one("SELECT * FROM datasets WHERE id=?", (dataset_id,))
+        return None if row is None else _dataset_from_row(row)
+
+    def dataset_by_name(self, name: str) -> DatasetRecord | None:
+        """The current dataset of that name (the latest import), matched case-insensitively."""
+        row = self.db.query_one("SELECT * FROM datasets WHERE lower(name)=lower(?) "
+                                "ORDER BY imported_at DESC, rowid DESC LIMIT 1", (name,))
+        return None if row is None else _dataset_from_row(row)
+
+    def current_datasets(self, limit: int = 50) -> list[DatasetRecord]:
+        """The latest import of each name, newest first."""
+        rows = self.db.query(
+            "SELECT * FROM datasets d WHERE d.rowid = (SELECT d2.rowid FROM datasets d2 WHERE "
+            "lower(d2.name)=lower(d.name) ORDER BY d2.imported_at DESC, d2.rowid DESC LIMIT 1) "
+            "ORDER BY d.imported_at DESC LIMIT ?", (limit,))
+        return [_dataset_from_row(r) for r in rows]
+
+    def datasets_named_in(self, text: str) -> list[DatasetRecord]:
+        """Current datasets whose name ("trial.csv") or name without its extension ("trial")
+        appears in ``text`` as a whole word."""
+        lower = text.lower()
+        out = []
+        for rec in self.current_datasets(500):
+            names = {rec.name.lower(), Path(rec.name).stem.lower()}
+            if any(n and re.search(r"(?<![\w.-])" + re.escape(n) + r"(?!\w|[.-]\w)", lower) for n in names):
+                out.append(rec)
+        return out

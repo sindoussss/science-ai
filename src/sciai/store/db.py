@@ -14,9 +14,9 @@ from importlib import resources
 from pathlib import Path
 from typing import Iterator
 
-from sciai.store.migrate import IntegrityFailure, migrate_v1_to_v2
+from sciai.store.migrate import IntegrityFailure, migrate_v1_to_v2, migrate_v2_to_v3
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 class Database:
@@ -48,16 +48,19 @@ class Database:
             if version is not None and version > SCHEMA_VERSION:
                 raise RuntimeError(f"database schema v{version} is newer than this app (v{SCHEMA_VERSION})")
             if version == 1:
-                self._upgrade_v1(schema)
+                self._upgrade(lambda: migrate_v1_to_v2(self._conn, self.path, schema), 2)
+                version = 2
+            if version == 2:
+                self._upgrade(lambda: migrate_v2_to_v3(self._conn, self.path, schema), 3)
             self._conn.executescript(schema)
             if version is None:
                 self._conn.execute(
                     "INSERT INTO meta(key, value) VALUES ('schema_version', ?)", (str(SCHEMA_VERSION),)
                 )
 
-    def _upgrade_v1(self, schema: str) -> None:
+    def _upgrade(self, step, target: int) -> None:  # noqa: ANN001 - a migration bound to this store
         try:
-            migrate_v1_to_v2(self._conn, self.path, schema)
+            step()
         except IntegrityFailure as exc:
             self._conn.close()
             if exc.backup is not None:
@@ -66,13 +69,15 @@ class Database:
                     Path(self.path + suffix).unlink(missing_ok=True)
             raise RuntimeError(
                 f"the knowledge store at {self.path} failed its integrity check after the upgrade to "
-                f"schema v2 ({exc}). It was restored from {exc.backup}, which is still a v1 store."
+                f"schema v{target} ({exc}). It was restored from {exc.backup}, which is still a "
+                f"v{target - 1} store."
             ) from exc
         except Exception as exc:
             self._conn.close()
             raise RuntimeError(
-                f"upgrading the knowledge store at {self.path} to schema v2 failed and was rolled back; "
-                f"the store is unchanged ({type(exc).__name__}: {exc})"
+                f"upgrading the knowledge store at {self.path} to schema v{target} failed and was rolled back; "
+                f"the store is unchanged by that step and still works as a v{target - 1} store "
+                f"({type(exc).__name__}: {exc})"
             ) from exc
 
     @contextmanager

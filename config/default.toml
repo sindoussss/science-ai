@@ -35,5 +35,10 @@ timeout = 20
 # outside [0, 1] or a speed above c fails its node. Off: only dimensional checks run.
 plausibility = true
 
+[data]
+alpha = 0.05               # significance level when the question gives none
+max_rows = 5000000         # larger files are refused at import (the tool sandbox has 3 GB)
+data_dir = "~/.sciai/datasets"  # imported files are copied here, named by their SHA-256
+
 [store]
 db_path = "~/.sciai/knowledge.db"
