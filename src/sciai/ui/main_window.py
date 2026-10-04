@@ -6,7 +6,6 @@ from typing import Any, Callable
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
-    QFrame,
     QHBoxLayout,
     QInputDialog,
     QMainWindow,
@@ -26,19 +25,10 @@ from sciai.ui.canvas.legend import Legend
 from sciai.ui.chat_bar import ChatPane
 from sciai.ui.controller_thread import EngineExecutor, EventBridge, RootConfirmer
 from sciai.ui.inspector.inspector import Hairline, Inspector
+from sciai.ui.mathtext import answer_text, prose_text
+from sciai.ui.shell import AppRoot, Card, HairlineSplitter
 from sciai.ui.sidebar import Sidebar
 from sciai.ui.theme.theme import Theme
-
-
-def _card(content: QWidget) -> QFrame:
-    """A floating white card: 12px radius, 1px border, no shadow (styled in theme.qss)."""
-    card = QFrame()
-    card.setObjectName("card")
-    lay = QVBoxLayout(card)
-    lay.setContentsMargins(1, 1, 1, 1)
-    lay.setSpacing(0)
-    lay.addWidget(content)
-    return card
 
 
 class MainWindow(QMainWindow):
@@ -54,35 +44,39 @@ class MainWindow(QMainWindow):
                                      "tools": [t.name for t in all_tools()]}
         self.session_id: str | None = None
 
-        self.sidebar = Sidebar(rt.repo)
+        self.sidebar = Sidebar(rt.repo, theme)
         self.graph = GraphView(theme)
         self.chat = ChatPane(theme)
         self.inspector = Inspector(rt.repo, theme, self._env_info)
-        center = QWidget()
-        center.setObjectName("cardBody")
-        cl = QVBoxLayout(center)
-        cl.setContentsMargins(0, 0, 0, 0)
-        cl.setSpacing(0)
-        cl.addWidget(self.graph, 1)
-        cl.addWidget(Hairline())
-        cl.addWidget(Legend(theme))
-        cl.addWidget(Hairline())
-        cl.addWidget(self.chat)
+        top = QWidget()
+        top.setObjectName("cardBody")
+        tl = QVBoxLayout(top)
+        tl.setContentsMargins(0, 0, 0, 0)
+        tl.setSpacing(0)
+        tl.addWidget(self.graph, 1)
+        tl.addWidget(Hairline())
+        tl.addWidget(Legend(theme))
+        # Canvas column: graph on top, chat below (~25% of the height, resizable).
+        self.center_split = HairlineSplitter(Qt.Orientation.Vertical, theme)
+        self.center_split.addWidget(top)
+        self.center_split.addWidget(self.chat)
+        self.center_split.setStretchFactor(0, 3)
+        self.center_split.setStretchFactor(1, 1)
+        self.center_split.setSizes([3000, 1000])  # proportional: 75 / 25
 
         gap = theme.space("gap")
-        root = QWidget()
-        root.setObjectName("appRoot")
+        root = AppRoot(theme)
         rl = QHBoxLayout(root)
         rl.setContentsMargins(gap, gap, gap, gap)
         rl.setSpacing(0)
         split = QSplitter(Qt.Orientation.Horizontal)
         split.setHandleWidth(gap)
         split.setChildrenCollapsible(False)
-        for pane, min_w in ((self.sidebar, 200), (center, 480), (self.inspector, 340)):
-            card = _card(pane)
-            card.setMinimumWidth(min_w)
+        for pane, min_w in ((self.sidebar, 200), (self.center_split, 480), (self.inspector, 320)):
+            card = root.track(Card(pane))
+            card.setMinimumWidth(max(min_w, card.minimumSizeHint().width()))  # never below content
             split.addWidget(card)
-        split.setSizes([236, 800, 380])
+        split.setSizes([224, 820, 340])
         split.setStretchFactor(1, 1)
         rl.addWidget(split)
         self.setCentralWidget(root)
@@ -197,9 +191,8 @@ class MainWindow(QMainWindow):
         assert result is not None
         caption = f"{result.llm_calls} model call(s) · {result.steps} step(s)"
         if result.status in ("answered", "reused"):
-            tag = "" if result.verified else " (not fully verified)"
-            reuse = " Reused from the knowledge base." if result.status == "reused" else ""
-            self.chat.add_assistant(f"{result.answer}{tag}{reuse}", caption)
+            self.chat.add_answer(self._answer_math(result), result.answer, verified=result.verified,
+                                 steps=result.steps, calls=result.llm_calls, reused=result.status == "reused")
             if result.final_node:
                 self._select_and_show(result.final_node)
         elif result.status == "needs_user":
@@ -211,6 +204,13 @@ class MainWindow(QMainWindow):
         else:
             self.chat.add_assistant(f"Stopped ({result.status}). {result.detail}", caption)
         self.sidebar.refresh(self.session_id)
+
+    def _answer_math(self, result: TaskResult) -> str:
+        final = self.rt.repo.get_node(result.final_node) if result.final_node else None
+        if final is None:
+            return prose_text(result.answer)
+        by_handle = {h: nid for nid, h in self.graph.handles.items()}
+        return answer_text(final, lambda h: self.rt.repo.get_node(by_handle[h]) if h in by_handle else None)
 
     def _node_note(self, node_id: str, text: str) -> None:
         self.rt.repo.add_message(self.session_id or "", "user", text, node_id=node_id, sent=True)

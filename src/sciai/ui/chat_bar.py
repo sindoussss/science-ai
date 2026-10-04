@@ -1,7 +1,7 @@
 """Chat under the canvas: message bubbles, collapsible thinking, and the input bar."""
 from __future__ import annotations
 
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -58,6 +58,43 @@ class Bubble(QFrame):
         self.text = text
 
 
+def _plural(n: int, word: str) -> str:
+    return f"{n} {word}" if n == 1 else f"{n} {word}s"
+
+
+class AnswerCard(QFrame):
+    MAX_W = 640
+
+    def __init__(self, theme: Theme, math: str, *, verified: bool, steps: int, calls: int,
+                 reused: bool = False) -> None:
+        super().__init__()
+        self.setObjectName("answerCard")
+        self.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Preferred)
+        self.setMaximumWidth(self.MAX_W)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(16, 12, 16, 14)
+        lay.setSpacing(6)
+        who = QLabel(f"{PRODUCT_NAME} · Answer")
+        who.setObjectName("secondary")
+        lay.addWidget(who)
+        body = QLabel(math)
+        body.setObjectName("answerMath")
+        body.setWordWrap(True)
+        body.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        body.setFont(theme.ui_font("size_answer_px", bold=True))
+        lay.addWidget(body)
+        status = "verified" if verified else "proposed"
+        head = "✓ Verified" if verified else "● Not fully verified"
+        extra = " · from knowledge base" if reused else ""
+        self.chip_text = f"{head} · {_plural(steps, 'step')} · {_plural(calls, 'model call')}{extra}"
+        chip = QLabel(self.chip_text)
+        chip.setStyleSheet(theme.chip_css(status))
+        lay.addWidget(chip, 0, Qt.AlignmentFlag.AlignLeft)
+        body.ensurePolished()
+        widest = max(body.fontMetrics().horizontalAdvance(math), chip.sizeHint().width())
+        body.setMinimumWidth(min(widest + 4, self.MAX_W - 32))
+
+
 class ThinkingGroup(QWidget):
     """Model thoughts for one task, collapsed behind a toggle."""
 
@@ -74,7 +111,7 @@ class ThinkingGroup(QWidget):
         self.body = QLabel()
         self.body.setObjectName("muted")
         self.body.setWordWrap(True)
-        self.body.setStyleSheet(f"font-size:{theme.px('size_small_px')}px; padding-left:12px;")
+        self.body.setStyleSheet(f"font-size:{theme.css('size_small_px')}; padding-left:12px;")
         self.body.hide()
         lay.addWidget(self.toggle, 0, Qt.AlignmentFlag.AlignLeft)
         lay.addWidget(self.body)
@@ -110,14 +147,20 @@ class ChatPane(QWidget):
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
         self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.scroll.setFixedHeight(190)
+        self.scroll.setMinimumHeight(72)
         inner = QWidget()
         self.messages = QVBoxLayout(inner)
         self.messages.setContentsMargins(0, 0, 4, 0)
         self.messages.setSpacing(6)
         self.messages.addStretch(1)
         self.scroll.setWidget(inner)
-        lay.addWidget(self.scroll)
+        # Stay pinned to the newest message unless the user scrolled up to read.
+        # (Scrolling once on a timer can run before the new widget is laid out.)
+        self._stick = True
+        bar = self.scroll.verticalScrollBar()
+        bar.rangeChanged.connect(lambda _lo, hi: bar.setValue(hi) if self._stick else None)
+        bar.valueChanged.connect(lambda v: setattr(self, "_stick", v >= bar.maximum() - 4))
+        lay.addWidget(self.scroll, 1)
 
         row = QHBoxLayout()
         row.setSpacing(8)
@@ -152,9 +195,10 @@ class ChatPane(QWidget):
 
     # transcript ------------------------------------------------------------
     def _append(self, widget: QWidget, align: Qt.AlignmentFlag) -> None:
+        self._stick = True  # a new message always brings the view to the bottom
         self.messages.insertWidget(self.messages.count() - 1, widget, 0, align)
-        QTimer.singleShot(0, lambda: self.scroll.verticalScrollBar().setValue(
-            self.scroll.verticalScrollBar().maximum()))
+        bar = self.scroll.verticalScrollBar()
+        bar.setValue(bar.maximum())
 
     def add_user(self, text: str, label: str = "") -> None:
         shown = f"{label} {text}".strip() if label else text
@@ -165,6 +209,14 @@ class ChatPane(QWidget):
     def add_assistant(self, text: str, caption: str = "") -> None:
         self._append(Bubble(PRODUCT_NAME, text, mine=False, caption=caption), Qt.AlignmentFlag.AlignLeft)
         self._plain.append(f"{PRODUCT_NAME}: {text}" + (f" ({caption})" if caption else ""))
+        self._thinking = None
+
+    def add_answer(self, math: str, raw: str, *, verified: bool, steps: int, calls: int,
+                   reused: bool = False) -> None:
+        """The final answer as math text in a larger card, with a verification chip."""
+        card = AnswerCard(self.theme, math, verified=verified, steps=steps, calls=calls, reused=reused)
+        self._append(card, Qt.AlignmentFlag.AlignLeft)
+        self._plain.append(f"{PRODUCT_NAME}: {raw} [{math}] ({card.chip_text})")
         self._thinking = None
 
     def add_thought(self, text: str) -> None:
@@ -189,7 +241,7 @@ class ChatPane(QWidget):
     def add_meta(self, text: str) -> None:
         lbl = QLabel(text)
         lbl.setObjectName("muted")
-        lbl.setStyleSheet(f"font-size:{self.theme.px('size_small_px')}px; padding-left:4px;")
+        lbl.setStyleSheet(f"font-size:{self.theme.css('size_small_px')}; padding-left:4px;")
         self._append(lbl, Qt.AlignmentFlag.AlignLeft)
         self._plain.append(text)
 

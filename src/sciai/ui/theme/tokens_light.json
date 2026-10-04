@@ -2,7 +2,7 @@
   "name": "light",
   "color": {
     "app_bg": "#EEF2F7",
-    "canvas": "#FFFFFF",
+    "canvas": "#F8FAFC",
     "panel": "#FFFFFF",
     "subtle": "#F9FAFB",
     "hover": "#F3F4F6",
@@ -34,17 +34,58 @@
     "status_inconclusive": "#6B7280",
     "status_inconclusive_bg": "#F3F4F6",
     "warning": "#B25E09",
-    "pin": "#2563EB"
+    "pin": "#2563EB",
+    "canvas_dot": "#E2E8F0",
+    "shadow": "#0A000000",
+    "text_secondary": "#6B7280"
   },
-  "radius": {"card": 12, "node": 10, "chip": 10, "button": 8, "bubble": 12},
+  "radius": {
+    "card": 12,
+    "node": 10,
+    "chip": 10,
+    "button": 8,
+    "bubble": 12
+  },
   "font": {
-    "ui": ["Inter", "Segoe UI", "Helvetica Neue", "Arial"],
-    "mono": ["Consolas", "JetBrains Mono", "Cascadia Mono", "SF Mono", "DejaVu Sans Mono", "monospace"],
-    "size_ui_px": 13,
-    "size_small_px": 11,
-    "size_title_px": 15,
-    "size_brand_px": 20,
-    "size_mono_px": 12
+    "ui": [
+      "Inter",
+      "Segoe UI",
+      "Helvetica Neue",
+      "Arial"
+    ],
+    "mono": [
+      "Consolas",
+      "JetBrains Mono",
+      "Cascadia Mono",
+      "SF Mono",
+      "DejaVu Sans Mono",
+      "monospace"
+    ],
+    "size_ui_px": 14,
+    "size_small_px": 12.5,
+    "size_title_px": 16,
+    "size_brand_px": 22,
+    "size_mono_px": 12.5,
+    "serif": [
+      "Source Serif 4",
+      "Newsreader",
+      "Georgia",
+      "Times New Roman",
+      "serif"
+    ],
+    "size_caption_px": 11,
+    "size_node_title_px": 13,
+    "size_node_body_px": 12,
+    "size_node_small_px": 11,
+    "size_answer_px": 20
   },
-  "space": {"gap": 12, "pad": 14, "xs": 4, "sm": 8}
+  "space": {
+    "gap": 12,
+    "pad": 16,
+    "xs": 4,
+    "sm": 8
+  },
+  "effects": {
+    "card_shadow": true
+  }
 }

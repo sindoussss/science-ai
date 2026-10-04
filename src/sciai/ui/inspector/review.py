@@ -134,7 +134,7 @@ class EvidenceCard(QFrame):
         lay.addLayout(head)
         tool = QLabel(ev.tool_name)
         tool.setObjectName("muted")
-        tool.setStyleSheet(f"font-size:{theme.px('size_small_px')}px;")
+        tool.setStyleSheet(f"font-size:{theme.css('size_small_px')};")
         lay.addWidget(tool)
         result = QLabel(summarize(ev))
         result.setWordWrap(True)

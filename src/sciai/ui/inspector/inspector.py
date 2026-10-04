@@ -76,7 +76,7 @@ class Inspector(QWidget):
 
         lay = QVBoxLayout(self)
         pad = theme.space("pad")
-        lay.setContentsMargins(pad + 2, pad, pad + 2, pad)
+        lay.setContentsMargins(pad, pad, pad, pad)
         lay.setSpacing(10)
 
         # Header: handle + title, version switcher, status chip.
@@ -142,12 +142,18 @@ class Inspector(QWidget):
         menu = QMenu(self.more)
         self.delete_action = menu.addAction("Delete node…")
         self.more.setMenu(menu)
+        for b in (self.lock_btn, self.demote_btn):
+            b.setObjectName("outline")
+        # Never squeeze the primary label; the quiet buttons give way first.
+        self.download.ensurePolished()  # size from the QSS font and padding, not the defaults
+        self.download.setMinimumWidth(self.download.sizeHint().width())
         actions.addWidget(self.download)
         actions.addWidget(self.lock_btn)
         actions.addWidget(self.demote_btn)
         actions.addStretch(1)
-        actions.addWidget(self.more)
         lay.addLayout(actions)
+        head.addSpacing(4)
+        head.addWidget(self.more)
         self.download.clicked.connect(self._download)
         self.lock_btn.clicked.connect(lambda: self.node and self.lock_toggled.emit(self.node.id, not self.node.locked))
         self.demote_btn.clicked.connect(lambda: self.node and self.demote.emit(self.node.id))

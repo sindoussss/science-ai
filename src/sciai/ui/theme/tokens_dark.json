@@ -34,7 +34,10 @@
     "status_inconclusive": "#9CA3AF",
     "status_inconclusive_bg": "#22262D",
     "warning": "#F0A44B",
-    "pin": "#5B8DEF"
+    "pin": "#5B8DEF",
+    "canvas_dot": "#1F2937",
+    "shadow": "#33000000",
+    "text_secondary": "#9CA3AF"
   },
   "radius": {
     "card": 12,
@@ -58,17 +61,32 @@
       "DejaVu Sans Mono",
       "monospace"
     ],
-    "size_ui_px": 13,
-    "size_small_px": 11,
-    "size_title_px": 15,
-    "size_brand_px": 20,
-    "size_mono_px": 12
+    "size_ui_px": 14,
+    "size_small_px": 12.5,
+    "size_title_px": 16,
+    "size_brand_px": 22,
+    "size_mono_px": 12.5,
+    "serif": [
+      "Source Serif 4",
+      "Newsreader",
+      "Georgia",
+      "Times New Roman",
+      "serif"
+    ],
+    "size_caption_px": 11,
+    "size_node_title_px": 13,
+    "size_node_body_px": 12,
+    "size_node_small_px": 11,
+    "size_answer_px": 20
   },
   "space": {
     "gap": 12,
-    "pad": 14,
+    "pad": 16,
     "xs": 4,
     "sm": 8
   },
-  "_note": "Placeholder until the light theme is signed off; values are a first pass."
+  "_note": "Placeholder until the light theme is signed off; values are a first pass.",
+  "effects": {
+    "card_shadow": true
+  }
 }
