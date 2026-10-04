@@ -18,9 +18,16 @@ METHOD_LABEL = {
     "alt_algorithm": "Different algorithm",
     "known_value": "Known value",
     "units": "Unit check",
+    "dimensional": "Dimensional analysis",
+    "plausibility": "Physical range",
+    "residual": "Residual",
+    "kirchhoff": "Kirchhoff and Ohm's law",
+    "power_balance": "Power balance",
+    "series_parallel": "Series/parallel reduction",
     "inputs_verified": "All answer values verified",
 }
-RULE_LABEL = {"stakes": "Stakes", "surprise": "Surprise", "confidence": "Confidence", "step_type": "Step type"}
+RULE_LABEL = {"stakes": "Stakes", "surprise": "Surprise", "confidence": "Confidence", "step_type": "Step type",
+              "units": "Units"}
 
 
 def _short(v: Any, n: int = 18) -> str:
@@ -40,6 +47,23 @@ def summarize(ev: Evidence) -> str:
         return f"Every value in the answer comes from a verified node ({n})."
     if d.get("error"):
         return f"Check could not run: {d['error']}"
+    if ev.method == "dimensional" and "derived" in d and ev.outcome == "pass":
+        dims = d["derived"] or {}
+        shown = " ".join(f"{k.strip('[]')}^{v:g}" if v != 1 else k.strip("[]") for k, v in dims.items())
+        return f"Units are consistent: the formula gives {shown or 'a dimensionless value'}."
+    if ev.method == "known_value" and "pint_value" in d:
+        return (f"CODATA {d.get('codata')} via SciPy {d.get('scipy')} matches pint ({d['pint_value']}) "
+                f"within {d.get('tolerance', 0):.0e}.")
+    if "sources_deliver_W" in d:
+        return (f"Sources deliver {_short(d['sources_deliver_W'])} W; resistors dissipate "
+                f"{_short(d.get('resistors_dissipate_W'))} W.")
+    if "equivalent_resistance" in d and ev.outcome == "pass":
+        return f"Reduces to {_short(d['equivalent_resistance'])} ohm; every current agrees."
+    if "max_error" in d and ev.outcome != "inconclusive":
+        how = f"{d['method']} rerun" if d.get("method") else "closed form"
+        return f"{how} differs by at most {_short(d['max_error'])}."
+    if "reference_si" in d:
+        return f"30-digit SI reference {_short(d['reference_si'])} vs result {_short(d.get('claimed_si'))}."
     if d.get("mismatches"):
         m = d["mismatches"][0]
         where = m.get("x", m.get("point", m.get("interval")))

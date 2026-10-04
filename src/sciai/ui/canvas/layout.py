@@ -2,7 +2,9 @@
 from what a step uses to the step itself. Siblings sit side by side under the mean x of
 their parents; check pills hang under the node they check.
 
-Each row is as tall as its tallest block (node plus the check pills under it).
+Each row is as tall as its tallest block (node plus the check pills under it). Modelling
+assumptions stand in a column to the left of everything else, so a long checklist doesn't
+widen the top row past the workspace.
 """
 from __future__ import annotations
 
@@ -17,6 +19,7 @@ PILL_TOP_GAP = 6
 PILL_GAP = 4
 COL_GAP = 40
 ROW_GAP = 44
+ASSUMPTION_GAP = 12
 
 
 def node_height(node: Node) -> float:
@@ -52,12 +55,15 @@ def layered_positions(nodes: dict[str, Node], edges: list[tuple[str, str, EdgeKi
     order = sorted(nodes.values(), key=lambda n: n.created_at)
     checks_of: dict[str, list[str]] = {}
     orphans: list[str] = []
+    assumptions: list[str] = []
     rows: dict[int, list[str]] = {}
     for n in order:
         if n.id in check_target:
             checks_of.setdefault(check_target[n.id], []).append(n.id)
         elif n.type == NodeType.CHECK:
             orphans.append(n.id)
+        elif n.type == NodeType.ASSUMPTION:
+            assumptions.append(n.id)
         else:
             rows.setdefault(d(n.id), []).append(n.id)
 
@@ -94,6 +100,10 @@ def layered_positions(nodes: dict[str, Node], edges: list[tuple[str, str, EdgeKi
         for k, cid in enumerate(ids):
             pos[cid] = (tx + PILL_INSET, top + k * (PILL_H + PILL_GAP))
     left = min((x for x, _ in pos.values()), default=0.0)
+    for k, aid in enumerate(assumptions):
+        pos[aid] = (left - pitch, k * (NODE_H + ASSUMPTION_GAP))
+    if assumptions:
+        left -= pitch
     for k, cid in enumerate(orphans):
         pos[cid] = (left - pitch, k * (PILL_H + PILL_GAP))
     return pos

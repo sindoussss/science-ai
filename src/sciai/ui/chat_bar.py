@@ -75,7 +75,7 @@ class AnswerCard(QFrame):
     view_graph = pyqtSignal(str)
 
     def __init__(self, theme: Theme, math: str, *, verified: bool, steps: int, calls: int, reused: bool,
-                 final_id: str | None) -> None:
+                 final_id: str | None, assumptions: list[str] | tuple[str, ...] = ()) -> None:
         super().__init__()
         self.setObjectName("answerCard")
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
@@ -90,6 +90,13 @@ class AnswerCard(QFrame):
         body.setWordWrap(True)
         body.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         lay.addWidget(body)
+        self.assumptions_label: QLabel | None = None
+        if assumptions:
+            # "Verified" means correct given these; they are listed so the reader can see what was assumed.
+            self.assumptions_label = QLabel("Assuming: " + "; ".join(assumptions) + ".")
+            self.assumptions_label.setObjectName("secondary")
+            self.assumptions_label.setWordWrap(True)
+            lay.addWidget(self.assumptions_label)
         head = "✓ Verified" if verified else "● Not fully verified"
         extra = " · from knowledge base" if reused else ""
         self.chip_text = f"{head} · {_plural(steps, 'step')} · {_plural(calls, 'model call')}{extra}"
@@ -614,12 +621,15 @@ class ChatPane(QWidget):
         self._plain.append(f"[plot] {title}")
 
     def add_answer(self, math: str, raw: str, *, verified: bool, steps: int, calls: int,
-                   reused: bool = False, final_id: str | None = None) -> AnswerCard:
+                   reused: bool = False, final_id: str | None = None,
+                   assumptions: list[str] | tuple[str, ...] = ()) -> AnswerCard:
         card = AnswerCard(self.theme, math, verified=verified, steps=steps, calls=calls, reused=reused,
-                          final_id=final_id)
+                          final_id=final_id, assumptions=assumptions)
         card.view_graph.connect(self.view_graph.emit)
         self._append(card)
         self._plain.append(f"{PRODUCT_NAME}: {raw} [{math}] ({card.chip_text})")
+        if assumptions:
+            self._plain.append("Assuming: " + "; ".join(assumptions) + ".")
         self._thinking = None
         return card
 

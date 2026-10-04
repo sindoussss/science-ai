@@ -19,9 +19,22 @@ TITLE_Y, TITLE_H = 12, 18  # 12px top padding
 BODY_Y, BODY_H = 34, 18  # ends at 52 = 64 - 12 bottom padding
 
 
+# Nodes whose body row shows their text rather than a tool result.
+TEXT_TYPES = (NodeType.PROBLEM, NodeType.FINAL, NodeType.ERROR, NodeType.ASSUMPTION, NodeType.ENTITY)
+
+
+def assumption_chip(node: Node) -> tuple[str, str]:
+    """(chip status style, label) for an assumption: it is never verified, only assumed or rejected."""
+    if node.status == Status.FAILED:
+        return "failed", "rejected"
+    if node.status == Status.INVALIDATED:
+        return "invalidated", "invalidated"
+    return "inconclusive", "assumed"
+
+
 def node_tooltip(node: Node, handle: str) -> str:
     parts = [f"{handle} · {node.title}", node.tool_name or node.type.value, f"status: {node.status.value}"]
-    body = node.content if node.type in (NodeType.PROBLEM, NodeType.FINAL, NodeType.ERROR) else node.display_result()
+    body = node.content if node.type in TEXT_TYPES else node.display_result()
     if body:
         parts.append(body[:400])
     return "\n".join(parts)
@@ -91,6 +104,10 @@ class NodeItem(QGraphicsItem):
         if n.status == Status.INVALIDATED:
             pen = QPen(t.c("status_invalidated"), 1, Qt.PenStyle.DashLine)
             fill = t.c("status_invalidated_bg")
+        elif n.type == NodeType.ASSUMPTION:
+            # outlined: canvas fill, so an assumption never reads as a computed result
+            pen = QPen(t.c("border_strong"), 1.25)
+            fill = t.c("canvas")
         else:
             pen = QPen(t.c("border_strong") if self.hovered else t.c("border"), 1)
             fill = t.c("panel")
@@ -107,7 +124,10 @@ class NodeItem(QGraphicsItem):
             return
 
         # Status chip straddles the top border (right), so the title row keeps the full inner width.
-        self._chip(p, w - PAD, 0, status, status)
+        if n.type == NodeType.ASSUMPTION:
+            self._chip(p, w - PAD, 0, *assumption_chip(n))
+        else:
+            self._chip(p, w - PAD, 0, status, status)
 
         # Title row: 13px semibold, full inner width; elided only past it (tooltip has the full text).
         shown, _fits = self.title_layout()
@@ -134,9 +154,12 @@ class NodeItem(QGraphicsItem):
         else:
             if n.type == NodeType.FINAL and self.math:
                 text, font = self.math, t.ui_font("size_node_title_px", bold=True)
+            elif n.type == NodeType.ASSUMPTION:  # the title carries the text
+                source = (n.tool_inputs or {}).get("source")
+                text = "default" if source == "default" else "suggested"
+                font = t.ui_font("size_node_small_px")
             else:
-                text = n.content if n.type in (NodeType.PROBLEM, NodeType.FINAL, NodeType.ERROR) \
-                    else n.display_result()
+                text = n.content if n.type in TEXT_TYPES else n.display_result()
                 font = t.mono_font("size_node_body_px")
             p.setFont(font)
             p.setPen(t.c("text") if n.status != Status.INVALIDATED else t.c("text_faint"))

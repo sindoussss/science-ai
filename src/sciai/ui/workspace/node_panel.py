@@ -24,7 +24,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from sciai.graph.model import Node, Status
+from sciai.graph.model import Node, NodeType, Status
 from sciai.store.repository import Repository
 from sciai.tools.registry import get as get_tool
 from sciai.ui.chat_bar import PRODUCT_NAME
@@ -88,6 +88,7 @@ class NodePanel(QWidget):
     lock_toggled = pyqtSignal(str, bool)
     demote = pyqtSignal(str)
     delete = pyqtSignal(str)
+    reject_assumption = pyqtSignal(str)
     note = pyqtSignal(str, str)
     closed = pyqtSignal()
 
@@ -244,8 +245,10 @@ class NodePanel(QWidget):
         actions.setSpacing(6)
         self.lock_btn = QPushButton("Lock")
         self.demote_btn = QPushButton("Demote")
-        for b in (self.lock_btn, self.demote_btn):
+        self.reject_btn = QPushButton("Reject assumption")
+        for b in (self.lock_btn, self.demote_btn, self.reject_btn):
             b.setObjectName("outline")
+        self.reject_btn.hide()
         self.more = QToolButton()
         self.more.setObjectName("iconButton")
         self.more.setIcon(icon("more", muted))
@@ -256,6 +259,7 @@ class NodePanel(QWidget):
         self.more.setMenu(menu)
         actions.addWidget(self.lock_btn)
         actions.addWidget(self.demote_btn)
+        actions.addWidget(self.reject_btn)
         actions.addStretch(1)
         actions.addWidget(self.more)
         rl.addLayout(actions)
@@ -264,6 +268,7 @@ class NodePanel(QWidget):
         self.lock_btn.clicked.connect(lambda: self.node and self.lock_toggled.emit(self.node.id, not self.node.locked))
         self.demote_btn.clicked.connect(lambda: self.node and self.demote.emit(self.node.id))
         self.delete_action.triggered.connect(lambda: self.node and self.delete.emit(self.node.id))
+        self.reject_btn.clicked.connect(lambda: self.node and self.reject_assumption.emit(self.node.id))
 
         for w, name in ((code_page, "Code"), (_scroll(log_body), "Execution Log"), (msg_page, "Messages"),
                         (_scroll(env_body), "Environment"), (review_page, "Review")):
@@ -339,6 +344,10 @@ class NodePanel(QWidget):
         self.warning.setVisible(bool(warn))
         self.lock_btn.setText("Unlock" if node.locked else "Lock")
         self.demote_btn.setEnabled(node.status == Status.VERIFIED)
+        is_assumption = node.type == NodeType.ASSUMPTION
+        self.demote_btn.setVisible(not is_assumption)
+        self.reject_btn.setVisible(is_assumption)
+        self.reject_btn.setEnabled(is_assumption and node.status not in (Status.FAILED, Status.INVALIDATED))
 
         clear_layout(self.inputs)
         dep_ids = self.repo.dependencies(node.id)

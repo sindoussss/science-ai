@@ -11,7 +11,7 @@ from PyQt6.QtGui import QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QFileDialog,
     QHBoxLayout,
-    QInputDialog,
+    QDialog,
     QMainWindow,
     QMenu,
     QMessageBox,
@@ -26,6 +26,7 @@ from sciai.runtime import Runtime
 from sciai.tools.registry import all_tools
 from sciai.ui.chat.inline import Column
 from sciai.ui.chat_bar import ChatPane, fmt_elapsed
+from sciai.ui.confirm_dialog import ConfirmProblemDialog
 from sciai.ui.controller_thread import EngineExecutor, EventBridge, RootConfirmer
 from sciai.ui.mathtext import answer_text, prose_text, value_text
 from sciai.ui.scrollbars import install_everywhere as install_overlay_scrollbars
@@ -144,6 +145,7 @@ class MainWindow(QMainWindow):
         np.demote.connect(
             lambda nid: self._engine_job(lambda: rt.engine.demote(nid, automatic=False, reason="demoted by user"), nid))
         np.delete.connect(self._delete)
+        np.reject_assumption.connect(self._reject_assumption)
         np.note.connect(self._node_note)
         self.sidebar.new_session.connect(self._new_session)
         self.sidebar.open_session.connect(self._open_session)
@@ -315,7 +317,7 @@ class MainWindow(QMainWindow):
             self._report_steps(result)
             self.chat.add_answer(self._answer_math(result), result.answer, verified=result.verified,
                                  steps=result.steps, calls=result.llm_calls, reused=result.status == "reused",
-                                 final_id=result.final_node)
+                                 final_id=result.final_node, assumptions=result.assumptions)
             if result.final_node:
                 self._select_and_show(result.final_node)
         elif result.status == "needs_user":
@@ -494,10 +496,18 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------ dialogs
     def _confirm_root(self, node: Node) -> None:
-        text, ok = QInputDialog.getMultiLineText(
-            self, "Confirm the problem",
-            "This is how the question was formalized. Edit it if needed, then confirm.", node.content)
-        self.confirmer.answer(text if ok else False)
+        dialog = ConfirmProblemDialog(node, self)
+        ok = dialog.exec() == QDialog.DialogCode.Accepted
+        self.confirmer.answer(dialog.answer() if ok else False)
+
+    def _reject_assumption(self, node_id: str) -> None:
+        node = self.rt.repo.get_node(node_id)
+        text = f"“{node.content}”" if node is not None else "this assumption"
+        if QMessageBox.question(self, "Reject assumption",
+                                f"Reject {text}? Every result built on it is invalidated, in every session.") \
+                != QMessageBox.StandardButton.Yes:
+            return
+        self._engine_job(lambda: self.rt.engine.reject_assumption(node_id), node_id)
 
     # ------------------------------------------------------------------ env
     def _poll_env(self) -> None:
