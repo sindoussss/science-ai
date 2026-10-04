@@ -8,14 +8,14 @@ from __future__ import annotations
 from sciai.graph.model import EdgeKind, Node, NodeType
 
 # Node geometry (scene px) shared with node_item.
-NODE_W, NODE_H = 200, 76
-PLOT_H = 120
-PILL_H = 24
+NODE_W, NODE_H = 176, 64
+PLOT_H = 112
+PILL_H = 22
 PILL_INSET = 12  # pills are narrower than their parent, centered under it
-PILL_TOP_GAP = 8
-PILL_GAP = 6
-COL_GAP = 80
-ROW_GAP = 44
+PILL_TOP_GAP = 6
+PILL_GAP = 4
+COL_GAP = 56
+ROW_GAP = 36
 
 
 def node_height(node: Node) -> float:

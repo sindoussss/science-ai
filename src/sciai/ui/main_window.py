@@ -10,9 +10,6 @@ from PyQt6.QtWidgets import (
     QInputDialog,
     QMainWindow,
     QMessageBox,
-    QSplitter,
-    QVBoxLayout,
-    QWidget,
 )
 
 from sciai.controller.loop import TaskResult
@@ -21,14 +18,20 @@ from sciai.graph.model import CascadeReport, Node
 from sciai.runtime import Runtime
 from sciai.tools.registry import all_tools
 from sciai.ui.canvas.graph_view import GraphView
-from sciai.ui.canvas.legend import Legend
 from sciai.ui.chat_bar import ChatPane
 from sciai.ui.controller_thread import EngineExecutor, EventBridge, RootConfirmer
-from sciai.ui.inspector.inspector import Hairline, Inspector
+from sciai.ui.inspector.inspector import Inspector
 from sciai.ui.mathtext import answer_text, prose_text
 from sciai.ui.shell import AppRoot, Card, HairlineSplitter
 from sciai.ui.sidebar import Sidebar
 from sciai.ui.theme.theme import Theme
+
+
+SIDEBAR_W = 220
+SIDEBAR_RAIL_W = 52
+INSPECTOR_W = 340
+CHAT_FRACTION = 0.28
+CHAT_MAX_FRACTION = 0.30
 
 
 class MainWindow(QMainWindow):
@@ -48,37 +51,27 @@ class MainWindow(QMainWindow):
         self.graph = GraphView(theme)
         self.chat = ChatPane(theme)
         self.inspector = Inspector(rt.repo, theme, self._env_info)
-        top = QWidget()
-        top.setObjectName("cardBody")
-        tl = QVBoxLayout(top)
-        tl.setContentsMargins(0, 0, 0, 0)
-        tl.setSpacing(0)
-        tl.addWidget(self.graph, 1)
-        tl.addWidget(Hairline())
-        tl.addWidget(Legend(theme))
-        # Canvas column: graph on top, chat below (~25% of the height, resizable).
-        self.center_split = HairlineSplitter(Qt.Orientation.Vertical, theme)
-        self.center_split.addWidget(top)
+        # Canvas column: graph on top (legend floats over it), chat below at 28%, never above 30%.
+        self.center_split = HairlineSplitter(Qt.Orientation.Vertical, theme,
+                                             last_fraction=CHAT_FRACTION, max_last_fraction=CHAT_MAX_FRACTION)
+        self.center_split.addWidget(self.graph)
         self.center_split.addWidget(self.chat)
-        self.center_split.setStretchFactor(0, 3)
-        self.center_split.setStretchFactor(1, 1)
-        self.center_split.setSizes([3000, 1000])  # proportional: 75 / 25
 
         gap = theme.space("gap")
         root = AppRoot(theme)
         rl = QHBoxLayout(root)
         rl.setContentsMargins(gap, gap, gap, gap)
-        rl.setSpacing(0)
-        split = QSplitter(Qt.Orientation.Horizontal)
-        split.setHandleWidth(gap)
-        split.setChildrenCollapsible(False)
-        for pane, min_w in ((self.sidebar, 200), (self.center_split, 480), (self.inspector, 320)):
-            card = root.track(Card(pane))
-            card.setMinimumWidth(max(min_w, card.minimumSizeHint().width()))  # never below content
-            split.addWidget(card)
-        split.setSizes([224, 820, 340])
-        split.setStretchFactor(1, 1)
-        rl.addWidget(split)
+        rl.setSpacing(gap)
+        self.sidebar_card = root.track(Card(self.sidebar))
+        self.sidebar_card.setFixedWidth(SIDEBAR_W)
+        self.center_card = root.track(Card(self.center_split))
+        self.inspector_card = root.track(Card(self.inspector))
+        self.inspector_card.setFixedWidth(INSPECTOR_W)
+        rl.addWidget(self.sidebar_card)
+        rl.addWidget(self.center_card, 1)
+        rl.addWidget(self.inspector_card)
+        self.sidebar.collapsed_changed.connect(
+            lambda c: self.sidebar_card.setFixedWidth(SIDEBAR_RAIL_W if c else SIDEBAR_W))
         self.setCentralWidget(root)
 
         self.executor.done.connect(self._job_done)

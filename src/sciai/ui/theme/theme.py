@@ -112,11 +112,11 @@ class Theme:
     def status_colors(self, status: str) -> tuple[QColor, QColor]:
         return self.c(f"status_{status}"), self.c(f"status_{status}_bg")
 
-    def chip_css(self, status: str) -> str:
+    def chip_css(self, status: str, size_key: str = "size_node_small_px") -> str:
         fg, bg = self.hex(f"status_{status}"), self.hex(f"status_{status}_bg")
         border = f"1px dashed {fg}" if status == "invalidated" else f"1px solid {bg}"
         return (f"color:{fg}; background:{bg}; border:{border}; border-radius:{self.radius('chip')}px;"
-                f"padding:1px 8px; font-weight:600; font-size:{self.css('size_node_small_px')};")
+                f"padding:1px 8px; font-weight:600; font-size:{self.css(size_key)};")
 
     # stylesheet ----------------------------------------------------------
     def qss(self) -> str:
@@ -125,6 +125,8 @@ class Theme:
         ui, mono = self.family("ui"), self.family("mono")
         fs, small, mono_px = self.css("size_ui_px"), self.css("size_small_px"), self.css("size_mono_px")
         cap, title = self.css("size_caption_px"), self.css("size_title_px")
+        pc = self.c("panel")
+        panel_glass = f"rgba({pc.red()}, {pc.green()}, {pc.blue()}, 230)"
         return f"""
 * {{ font-family: "{ui}"; font-size: {fs}; color: {c['text']}; outline: none; }}
 QMainWindow, QWidget#appRoot {{ background: {c['app_bg']}; }}
@@ -148,6 +150,11 @@ QPushButton#primary {{ background: {c['accent']}; border-color: {c['accent']}; c
     font-weight: 600; }}
 QPushButton#primary:hover {{ background: {c['accent_hover']}; border-color: {c['accent_hover']}; }}
 QPushButton#primary:disabled {{ background: {c['border']}; border-color: {c['border']}; color: {c['text_faint']}; }}
+QFrame#canvasLegend {{ background: {panel_glass}; border: 1px solid {c['border']};
+    border-radius: {r['button']}px; }}
+QToolButton#overlayButton {{ background: {c['panel']}; border: 1px solid {c['border']}; border-radius: {r['button']}px;
+    padding: 3px 10px; font-size: {small}; color: {c['text']}; }}
+QToolButton#overlayButton:hover {{ background: {c['hover']}; }}
 QPushButton#outline {{ padding: 5px 10px; }}
 QPushButton#nav {{ border: none; background: transparent; text-align: left; padding: 6px 8px; }}
 QPushButton#nav:hover {{ background: {c['hover']}; }}

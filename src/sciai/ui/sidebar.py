@@ -7,12 +7,14 @@ from PyQt6.QtCore import QSize, Qt, pyqtSignal
 from PyQt6.QtGui import QFont, QMouseEvent, QPainter, QPaintEvent
 from PyQt6.QtWidgets import (
     QAbstractItemView,
+    QHBoxLayout,
     QLabel,
     QListWidget,
     QListWidgetItem,
     QPushButton,
     QScrollArea,
     QSizePolicy,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -102,20 +104,41 @@ class Sidebar(QWidget):
     new_session = pyqtSignal()
     open_session = pyqtSignal(str)
     open_node = pyqtSignal(str, str)  # session_id, node_id
+    collapsed_changed = pyqtSignal(bool)
 
     def __init__(self, repo: Repository, theme: Theme) -> None:
         super().__init__()
         self.setObjectName("cardBody")
         self.repo = repo
         self.theme = theme
+        self.collapsed = False
         t = self.theme
-        lay = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        self.full = QWidget()
+        self.full.setObjectName("cardBody")
+        self.rail = self._build_rail()
+        self.rail.hide()
+        outer.addWidget(self.full)
+        outer.addWidget(self.rail)
+
+        lay = QVBoxLayout(self.full)
         lay.setContentsMargins(12, 18, 12, 12)
         lay.setSpacing(0)
+        brand_row = QHBoxLayout()
+        brand_row.setContentsMargins(0, 0, 0, 0)
         brand = QLabel(PRODUCT_NAME)
         brand.setObjectName("brand")
         brand.setContentsMargins(8, 0, 0, 0)
-        lay.addWidget(brand)
+        collapse = QToolButton()
+        collapse.setObjectName("iconButton")
+        collapse.setIcon(icon("chevron_left", t.hex("text_secondary")))
+        collapse.setToolTip("Collapse sidebar")
+        collapse.clicked.connect(lambda: self.set_collapsed(True))
+        brand_row.addWidget(brand, 1)
+        brand_row.addWidget(collapse, 0, Qt.AlignmentFlag.AlignTop)
+        lay.addLayout(brand_row)
         tag = QLabel("Local research workspace")
         tag.setObjectName("secondary")
         tag.setContentsMargins(8, 0, 0, 0)
@@ -150,6 +173,30 @@ class Sidebar(QWidget):
         self.kb_caption = self.kb_sec.header
         self.sessions.itemClicked.connect(lambda it: self.open_session.emit(it.data(Qt.ItemDataRole.UserRole)))
         self.kb.itemClicked.connect(self._kb_clicked)
+
+    def _build_rail(self) -> QWidget:
+        t = self.theme
+        rail = QWidget()
+        rail.setObjectName("cardBody")
+        rl = QVBoxLayout(rail)
+        rl.setContentsMargins(8, 18, 8, 12)
+        rl.setSpacing(8)
+        for name, tip, slot in (("chevron_right", "Expand sidebar", lambda: self.set_collapsed(False)),
+                                ("plus", "New session", self.new_session.emit)):
+            b = QToolButton()
+            b.setObjectName("iconButton")
+            b.setIcon(icon(name, t.hex("text")))
+            b.setToolTip(tip)
+            b.clicked.connect(slot)
+            rl.addWidget(b, 0, Qt.AlignmentFlag.AlignHCenter)
+        rl.addStretch(1)
+        return rail
+
+    def set_collapsed(self, collapsed: bool) -> None:
+        self.collapsed = collapsed
+        self.full.setVisible(not collapsed)
+        self.rail.setVisible(collapsed)
+        self.collapsed_changed.emit(collapsed)
 
     def refresh(self, current: str | None) -> None:
         t = self.theme

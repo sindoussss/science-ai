@@ -48,6 +48,9 @@ def _draw(name: str, p: QPainter, c: QColor) -> None:
     elif name == "chevron_right":
         p.drawLine(QPointF(6.5, 4.5), QPointF(10, 8))
         p.drawLine(QPointF(10, 8), QPointF(6.5, 11.5))
+    elif name == "chevron_left":
+        p.drawLine(QPointF(9.5, 4.5), QPointF(6, 8))
+        p.drawLine(QPointF(6, 8), QPointF(9.5, 11.5))
     elif name == "empty":
         p.drawEllipse(QRectF(6.5, 6.5, 3, 3))
 

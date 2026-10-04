@@ -79,19 +79,59 @@ class _HairlineHandle(QSplitterHandle):
 
 
 class HairlineSplitter(QSplitter):
-    """A splitter whose handle looks like a 1px rule but has a 7px grab area."""
+    """A splitter whose handle looks like a 1px rule but has a 7px grab area.
 
-    def __init__(self, orientation: Qt.Orientation, theme: Theme) -> None:
+    With ``last_fraction`` set (two panes), the last pane keeps that share of the
+    splitter's height across resizes, and dragging can never push it above
+    ``max_last_fraction``."""
+
+    def __init__(self, orientation: Qt.Orientation, theme: Theme, last_fraction: float | None = None,
+                 max_last_fraction: float = 1.0) -> None:
         super().__init__(orientation)
         self.color = theme.c("border")
         self.setHandleWidth(7)
         self.setChildrenCollapsible(False)
+        self.max_last_fraction = max_last_fraction
+        self.last_fraction = last_fraction
+        self.splitterMoved.connect(self._moved)
 
     def createHandle(self) -> QSplitterHandle:  # noqa: N802
         h = _HairlineHandle(self.orientation(), self, self.color)
         h.setCursor(Qt.CursorShape.SplitVCursor if self.orientation() == Qt.Orientation.Vertical
                     else Qt.CursorShape.SplitHCursor)
         return h
+
+    def _length(self) -> int:
+        return self.height() if self.orientation() == Qt.Orientation.Vertical else self.width()
+
+    def _apply_fraction(self) -> None:
+        if self.last_fraction is None or self.count() != 2:
+            return
+        total = self._length()
+        avail = total - self.handleWidth()
+        if avail <= 0:
+            return
+        frac = min(self.last_fraction, self.max_last_fraction)
+        last = int(frac * total)  # a share of the whole column, handle included
+        self.blockSignals(True)
+        self.setSizes([avail - last, last])
+        self.blockSignals(False)
+
+    def _moved(self, _pos: int, _index: int) -> None:
+        if self.last_fraction is None or self.count() != 2:
+            return
+        total = self._length()
+        if total > 0:
+            self.last_fraction = min(self.sizes()[1] / total, self.max_last_fraction)
+            self._apply_fraction()
+
+    def resizeEvent(self, event) -> None:  # noqa: N802, ANN001
+        super().resizeEvent(event)
+        self._apply_fraction()
+
+    def showEvent(self, event) -> None:  # noqa: N802, ANN001
+        super().showEvent(event)
+        self._apply_fraction()
 
 
 class ElidedLabel(QLabel):
