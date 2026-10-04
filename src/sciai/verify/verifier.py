@@ -75,11 +75,17 @@ class Verifier:
             return VerifyOutcome("unavailable")
         plans = self.offered(node)
         required = [(p, a) for p, a in plans if p.required]
-        optional = [(p, a) for p, a in plans if not p.required and only_method in (None, p.method, p.checker)]
-        if only_method is not None and not optional and not any(
-                only_method in (p.method, p.checker) for p, _ in required):
-            return VerifyOutcome("unavailable")
-        if not required and not optional:
+        optional = [(p, a) for p, a in plans if not p.required]
+        if only_method is not None:
+            if not any(only_method in (p.method, p.checker) for p, _ in plans):
+                return VerifyOutcome("unavailable")
+            # Choosing an optional check narrows the optional ones; naming a required one
+            # changes nothing, since required checks always run.
+            chosen = [(p, a) for p, a in optional if only_method in (p.method, p.checker)]
+            optional_offered, optional = bool(optional), chosen or optional
+        else:
+            optional_offered = bool(optional)
+        if not plans:
             return VerifyOutcome("unavailable")
         out = VerifyOutcome("inconclusive")
         blocked = optional_passed = False
@@ -97,7 +103,7 @@ class Verifier:
                 optional_passed = True
                 break  # one optional pass is enough
         passes = [r for r in out.runs if r.outcome == "pass"]
-        if passes and not blocked and (optional_passed or not optional):
+        if passes and not blocked and (optional_passed or not optional_offered):
             last = passes[-1]
             if node.status != Status.HYPOTHESIS:  # chem keeps its evidence but stays a hypothesis
                 self.engine.set_status(node.id, Status.VERIFIED, f"{last.plan.method} check passed",

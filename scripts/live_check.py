@@ -2,10 +2,13 @@
 
     python scripts/live_check.py --model qwen2.5:7b-instruct-q4_K_M
     python scripts/live_check.py --model qwen3:8b --think        # reasoning mode on
+    python scripts/live_check.py --model qwen2.5:7b-instruct-q4_K_M --suite physics
 
 Runs on a fresh, temporary knowledge store (your ~/.sciai store is never touched), so the last
 problem, a repeat of the first, measures knowledge reuse from this run only. Prints a table and
-saves it to results/<model>.md (characters a Windows file name can't hold become "-").
+saves it to results/<model>.md, or results/<model>-physics.md for the physics suite (characters
+a Windows file name can't hold become "-"). The physics suite accepts every default assumption
+automatically, as nobody is there to tick the checklist, and lists them in the report.
 
 Columns: pass (verified and the expected value), JSON retries (re-asks after an invalid reply),
 ladder (furthest failure-ladder stage any step reached), seconds, model calls.
@@ -42,6 +45,7 @@ class Problem:
     expect_text: str
     reuse_of: str | None = None  # a repeat: must be answered from the store with no model call
     note: str = ""
+    signed: bool = True  # False: a current's sign is a convention, so only the magnitude counts
 
 
 PROBLEMS = [
@@ -51,12 +55,32 @@ PROBLEMS = [
     Problem("units", "Convert 60 miles per hour to meters per second.", (26.8224,), "26.8224 m/s"),
     Problem("ode", "Solve the differential equation dy/dx = 6*x^2 - 4*x with y(0) = 1, then give y(2).",
             (9.0,), "y(2) = 9",
-            note="Phase 1 has no ODE solver; this one is solvable by integrating both sides"),
+            note="solvable with ode.dsolve or by integrating both sides"),
     Problem("hard", "Find the area of the region enclosed between the curves y = x^3 - 3*x and y = x.",
             (8.0,), "8", note="multi-step (intersections, then |difference| on two intervals); expected to fail"),
     Problem("repeat", "Compute the definite integral of x^2*exp(-x) from x = 0 to x = 1.",
             (2 - 5 / math.e,), "reused, 0 model calls", reuse_of="integral"),
 ]
+
+
+PHYSICS_PROBLEMS = [
+    Problem("projectile", "A ball is thrown at 20 m/s at 30 degrees above level ground. How far away does it "
+            "land? Use g = 9.80665 m/s^2.", (400 * math.sin(math.radians(60)) / 9.80665,), "35.324 m",
+            note="degrees must become radians before the sine"),
+    Problem("temperature", "Convert 25 degC to kelvin.", (298.15,), "298.15 K",
+            note="an absolute temperature, not a difference"),
+    Problem("photon", "What is the energy of a photon with a wavelength of 500 nm?",
+            (6.62607015e-34 * 299792458 / 500e-9,), "3.9729e-19 J", note="constants from CODATA"),
+    Problem("rc", "A 1 uF capacitor charged to 5 V discharges through a 1 kohm resistor. What is its voltage "
+            "after 2 ms?", (5 * math.exp(-2),), "0.67668 V"),
+    Problem("circuit", "A 12 V source drives a 100 ohm resistor in series with two 200 ohm resistors in "
+            "parallel. What current flows from the source?", (0.06,), "0.06 A",
+            note="the source current's sign is a convention, so only its magnitude counts", signed=False),
+    Problem("repeat", "A ball is thrown at 20 m/s at 30 degrees above level ground. How far away does it "
+            "land? Use g = 9.80665 m/s^2.", (400 * math.sin(math.radians(60)) / 9.80665,),
+            "reused, 0 model calls", reuse_of="projectile"),
+]
+SUITES = {"math": PROBLEMS, "physics": PHYSICS_PROBLEMS}
 
 
 class CountingLLM:
@@ -90,6 +114,7 @@ class Row:
     answer: str = ""
     why: str = ""
     values: list[float] = field(default_factory=list)
+    assumptions: list[str] = field(default_factory=list)
 
 
 def _numbers(result: Any) -> list[float]:
@@ -101,13 +126,21 @@ def _numbers(result: Any) -> list[float]:
         return [float(result["value"])]
     if kind == "expr" and isinstance(result.get("numeric"), (int, float)):
         return [float(result["numeric"])]
+    if kind == "quantity":  # as shown, and in SI
+        return [float(result["value"]), float(result["si_value"])]
+    if kind == "series":
+        return [float(v) for v in result.get("value") or []]
     if kind == "list":
         return [v for item in result.get("value") or [] for v in _numbers(item)]
     return []
 
 
-def _close(a: float, b: float) -> bool:
-    return math.isclose(a, b, rel_tol=1e-6, abs_tol=1e-9)
+def _close(a: float, b: float, signed: bool = True) -> bool:
+    """``b`` within 1e-6 of the expected ``a`` (relative; absolute 1e-9 only when ``a`` is 0, so a
+    photon energy of 4e-19 J is not "close" to 0). Unsigned when the sign is a convention."""
+    if not signed:
+        a, b = abs(a), abs(b)
+    return math.isclose(a, b, rel_tol=1e-6, abs_tol=1e-9 if a == 0 else 0.0)
 
 
 def _furthest_ladder(rt: Any, session_id: str) -> str:
@@ -130,6 +163,7 @@ def run_problem(rt: Any, llm: CountingLLM, p: Problem) -> Row:
     row.seconds = time.perf_counter() - t0
     row.status, row.calls, row.retries = res.status, res.llm_calls, llm.retries
     row.answer = res.answer
+    row.assumptions = list(res.assumptions)
     row.ladder = _furthest_ladder(rt, sid)
     if res.status not in ("answered", "reused") or res.final_node is None:
         asked = res.status == "needs_user" and res.question
@@ -138,7 +172,7 @@ def run_problem(rt: Any, llm: CountingLLM, p: Problem) -> Row:
     final = rt.engine.resolve(res.final_node)
     for nid in (final.tool_inputs or {}).get("answer_nodes", []):
         row.values += _numbers(rt.engine.resolve(nid).result)
-    missing = [e for e in p.expected if not any(_close(e, v) for v in row.values)]
+    missing = [e for e in p.expected if not any(_close(e, v, p.signed) for v in row.values)]
     if missing:
         row.why = f"expected {p.expect_text}, got {row.values or 'no numeric value'}"
     elif not res.verified:
@@ -174,6 +208,10 @@ def report(rows: list[Row], meta: dict[str, str]) -> str:
               f"{sum(r.retries for r in rows)} JSON retries", "", format_table(rows), "", "## Problems", ""]
     lines += [f"{i}. **{r.problem.key}**: {r.problem.question}" + (f" ({r.problem.note})" if r.problem.note else "")
               for i, r in enumerate(rows, 1)]
+    assumed = [(i, r) for i, r in enumerate(rows, 1) if r.assumptions]
+    if assumed:
+        lines += ["", "## Assumptions accepted automatically", ""]
+        lines += [f"{i}. **{r.problem.key}**: {'; '.join(r.assumptions)}" for i, r in assumed]
     return "\n".join(lines) + "\n"
 
 
@@ -205,6 +243,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--think", action=argparse.BooleanOptionalAction, default=None,
                    help="reasoning mode on/off (default: the config's [model] think)")
     p.add_argument("--out", default=str(ROOT / "results"), help="folder for <model>.md (default: results/)")
+    p.add_argument("--suite", choices=sorted(SUITES), default="math",
+                   help="math (Phase 1 problems, the default) or physics (units, constants, ODEs, circuits)")
     return p.parse_args(argv)
 
 
@@ -226,7 +266,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"live_check: {error}", file=sys.stderr)
         return 2
 
-    meta = {"model": cfg.model.name, "think": str(cfg.model.think).lower(), "ollama": version,
+    problems = SUITES[args.suite]
+    meta = {"model": cfg.model.name, "suite": args.suite, "think": str(cfg.model.think).lower(), "ollama": version,
             "num_ctx": str(cfg.model.num_ctx), "num_predict": str(cfg.model.num_predict),
             "date": datetime.now().strftime("%Y-%m-%d %H:%M")}
     rows: list[Row] = []
@@ -235,8 +276,8 @@ def main(argv: list[str] | None = None) -> int:
         llm = CountingLLM(rt.llm)
         rt.controller.llm = llm
         try:
-            for i, p in enumerate(PROBLEMS, 1):
-                print(f"[{i}/{len(PROBLEMS)}] {p.key}: {p.question}", flush=True)
+            for i, p in enumerate(problems, 1):
+                print(f"[{i}/{len(problems)}] {p.key}: {p.question}", flush=True)
                 row = run_problem(rt, llm, p)
                 rows.append(row)
                 print(f"      {'PASS' if row.passed else 'FAIL'} ({row.status}, {row.seconds:.1f} s, "
@@ -249,7 +290,7 @@ def main(argv: list[str] | None = None) -> int:
     text = report(rows, meta)
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
-    path = out / f"{safe_name(cfg.model.name)}.md"
+    path = out / f"{safe_name(cfg.model.name)}{'' if args.suite == 'math' else '-' + args.suite}.md"
     path.write_text(text, encoding="utf-8")
     print()
     print(format_table(rows))

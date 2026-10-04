@@ -46,6 +46,10 @@ class ToolSpec:
     # An argument holding a domain entity (a circuit netlist): the controller stores it as an
     # entity node, and the result depends on that node.
     entity_arg: str | None = None
+    describe_entity: Callable[[Any], str] | None = field(default=None, compare=False)
+    # An argument naming a graph node (a handle like "n5"): the controller resolves it, the result
+    # depends on that node, and the node's result is passed to the tool as "data".
+    node_arg: str | None = None
 
     def validate(self, args: dict[str, Any]) -> None:
         jsonschema.validate(args, self.schema)

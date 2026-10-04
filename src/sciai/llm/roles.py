@@ -24,14 +24,23 @@ class Role:
         return text.replace("{TOOLS}", self.tool_lines())
 
 
-SOLVERS = ("sympy.", "numeric.evaluate", "numeric.quad", "numeric.root", "units.convert", "plot.")
+SOLVERS = ("sympy.", "numeric.evaluate", "numeric.quad", "numeric.root", "units.convert", "plot.",
+           "phys.evaluate", "phys.constant", "ode.dsolve", "ode.solve_ivp", "linalg.solve", "circuit.dc")
 
 ROLES: dict[str, Role] = {
     "formalizer": Role("formalizer", "formalize.md", SOLVERS),
     "controller": Role("controller", "controller.md", SOLVERS),
     "algebra": Role("algebra", "algebra.md", ("sympy.",)),
     "numeric": Role("numeric", "numeric.md", ("numeric.evaluate", "numeric.quad", "numeric.root", "units.convert")),
+    "physics": Role("physics", "physics.md", ("phys.", "ode.", "units.", "sympy.", "numeric.", "plot.")),
+    "circuits": Role("circuits", "circuits.md", ("circuit.", "linalg.", "ode.", "plot.")),
 }
 
-# For a retry, switch to a worker role different from the one that failed.
-RETRY_ROLE = {"controller": "algebra", "algebra": "numeric", "numeric": "algebra"}
+# After a failed check the retry goes to a specialist role for the failed tool, which
+# must pick a different method or tool (a repeated fingerprint is refused).
+RETRY_ROLE_BY_PREFIX = (("sympy.", "algebra"), ("phys.", "physics"), ("units.", "physics"), ("ode.", "physics"),
+                        ("circuit.", "circuits"), ("linalg.", "circuits"))
+
+
+def retry_role(tool: str) -> str:
+    return next((role for prefix, role in RETRY_ROLE_BY_PREFIX if tool.startswith(prefix)), "numeric")

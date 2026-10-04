@@ -125,3 +125,15 @@ def test_dimensional_check_rejects_inconsistent_formula():
     out = run("phys.check_dimensions", expr="a + b", values={"a": q(1, "m"), "b": q(1, "s")},
               dims={"[length]": 1})
     assert out["result"]["outcome"] == "fail"
+
+
+def test_fingerprint_ignores_symbol_names_and_unused_values():
+    canon = get("phys.evaluate").canonical
+    a = canon({"expr": "v", "values": {"v": q(60, "mph")}, "to_unit": "m/s"})
+    b = canon({"expr": "speed", "values": {"speed": q(96.56064, "km/h"), "unused": q(3, "kg")}, "to_unit": "m/s"})
+    assert a == b
+    # Different roles of the same values still differ: a/b is not b/a.
+    x = canon({"expr": "a/b", "values": {"a": q(2, "m"), "b": q(3, "s")}})
+    y = canon({"expr": "a/b", "values": {"a": q(3, "s"), "b": q(2, "m")}})
+    z = canon({"expr": "b/a", "values": {"b": q(2, "m"), "a": q(3, "s")}})
+    assert x != y and x == z

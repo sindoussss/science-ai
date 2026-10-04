@@ -4,7 +4,13 @@ A fully local, chat-first research system. One local model (served by Ollama) de
 deterministic tools (SymPy, NumPy/SciPy, mpmath, pint) do every calculation; a graph records every
 step, its status and the evidence that verified it.
 
-Phase 1 (this branch) covers mathematics. Design: [docs/design.md](docs/design.md).
+Phase 1 covers mathematics. Phase 2 (this branch) adds physics and engineering: values with
+units, physical constants (CODATA 2022 from the pinned SciPy), ODEs (closed form and numeric, each
+checking the other), linear systems and DC circuits, with modelling assumptions you confirm or
+reject. Design: [docs/design.md](docs/design.md).
+
+Opening a Phase 1 knowledge store upgrades it in place to schema v2. A backup is written next to
+it first (`knowledge.db.v1.bak`); if the upgrade fails, the store is left as it was.
 
 ## Setup on Windows (PowerShell)
 
@@ -88,6 +94,7 @@ The UI tests open real (hidden) windows. On a machine without a display, set
 ```powershell
 python scripts\live_check.py --model qwen2.5:7b-instruct-q4_K_M
 python scripts\live_check.py --model qwen3:8b --think
+python scripts\live_check.py --model qwen2.5:7b-instruct-q4_K_M --suite physics
 ```
 
 It runs six fixed problems (a definite integral, an equation, a unit conversion, an ODE, one hard
@@ -96,6 +103,11 @@ reuse) on a fresh temporary store, so your own knowledge store is not touched. I
 with pass/fail, JSON retries, the failure-ladder stage reached, seconds and model calls, and saves
 it to `results\<model>.md` (a `:` or `/` in the tag becomes `-`, since Windows file names can't
 hold them). If Ollama isn't running or the model isn't pulled, it says so and exits with code 2.
+
+`--suite physics` runs six physics problems instead (a projectile in degrees, an absolute
+temperature, a photon energy from constants, an RC discharge, a series/parallel circuit, and a
+repeat of the first) and saves `results\<model>-physics.md`. Nobody is there to tick the
+assumption checklist, so the defaults are accepted and listed in the report.
 
 ## Linux / macOS
 
@@ -110,10 +122,13 @@ pytest
 ## How a question flows
 
 1. Knowledge-store lookup (no model call). A verified answer to the same question is reused.
-2. One model call formalizes the question into the root node, which you confirm or edit.
+2. One model call formalizes the question into the root node, which you confirm or edit. For a
+   physics problem it also names the problem type and the given values with their units. The
+   type's default assumptions (no air resistance, ideal wires...) are offered as a checklist; each
+   ticked one becomes an assumption node, and rejecting it later invalidates everything built on it.
 3. If the formal goal is a single tool call that is already verified, it is reused; otherwise it runs.
 4. Otherwise the controller loop: one JSON action per model call, validated, executed in the tool sandbox.
-5. Hard-coded risk rules (stakes, surprise, confidence, step type) decide when a node needs an
+5. Hard-coded risk rules (stakes, surprise, confidence, step type, units) decide when a node needs an
    independent check. A failed check walks the ladder: retry with a different method, backtrack,
    then escalate with both results side by side.
 6. The final answer is a template whose values are filled from node results, so the model never

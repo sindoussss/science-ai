@@ -222,16 +222,22 @@ def evaluate_fn(args: dict[str, Any]) -> dict[str, Any]:
             "meta": {"method": method, "values_si": {str(s): f"{q:~}" for s, q in qs.items()}}}
 
 
-def _canon_values(values: dict[str, Any]) -> dict[str, Any]:
-    out = {}
-    for name, v in sorted((values or {}).items()):
-        out[name] = Q.canonical_object(v) if isinstance(v, dict) else {"number": Q.si_key(float(v))}
-    return out
+def _canon_value(v: Any) -> dict[str, Any]:
+    return Q.canonical_object(v) if isinstance(v, dict) else {"number": Q.si_key(float(v))}
 
 
 def _canon_evaluate(args: dict[str, Any]) -> dict[str, Any]:
+    """Symbols are renamed by their values, so v*t with v = 60 mph and speed*t with
+    speed = 96.56064 km/h fingerprint alike; values the formula doesn't use are dropped.
+    Two symbols with equal values can swap names without changing the result."""
+    expr = parse(args["expr"])
+    values = args.get("values") or {}
+    used = sorted((s for s in expr.free_symbols if str(s) in values),
+                  key=lambda s: (json.dumps(_canon_value(values[str(s)]), sort_keys=True), str(s)))
+    rename = {s: sp.Symbol(f"q{i}") for i, s in enumerate(used)}
     target = _target(args)
-    return {"expr": canonical(parse(args["expr"])), "values": _canon_values(args.get("values") or {}),
+    return {"expr": canonical(expr.xreplace(rename)),
+            "values": [_canon_value(values[str(s)]) for s in used],
             "to_unit": None if target is None else str(target), "kind": args.get("kind"),
             "method": args.get("method", "default")}
 

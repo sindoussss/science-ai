@@ -42,6 +42,12 @@ class ToolsConfig:
 
 
 @dataclass
+class PhysicsConfig:
+    # Range rules by quantity kind (absolute temperature >= 0 K, 0 <= efficiency <= 1, speed <= c).
+    plausibility: bool = True
+
+
+@dataclass
 class StoreConfig:
     db_path: str = "~/.sciai/knowledge.db"
 
@@ -52,6 +58,7 @@ class Config:
     controller: ControllerConfig = field(default_factory=ControllerConfig)
     risk: RiskConfig = field(default_factory=RiskConfig)
     tools: ToolsConfig = field(default_factory=ToolsConfig)
+    physics: PhysicsConfig = field(default_factory=PhysicsConfig)
     store: StoreConfig = field(default_factory=StoreConfig)
 
     @property

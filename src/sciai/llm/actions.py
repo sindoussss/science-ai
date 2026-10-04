@@ -34,6 +34,13 @@ ACTION_SCHEMA: dict[str, Any] = {
         "statement": {"type": "string", "maxLength": 2000},
         "assumptions": {"type": "object", "additionalProperties": {"type": "string"}},
         "goal": {"type": "object"},
+        # formalize, Phase 2: the problem type picks the default assumption checklist (an
+        # unknown type gets the general one); givens are quantities {"value", "unit", "kind"?}.
+        "problem_type": {"type": "string", "maxLength": 40},
+        "givens": {"type": "object", "maxProperties": 20,
+                   "additionalProperties": {"type": "object"}},
+        "modelling_assumptions": {"type": "array", "maxItems": 8,
+                                  "items": {"type": "string", "maxLength": 120}},
     },
     "required": ["action"],
 }

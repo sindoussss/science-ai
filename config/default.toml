@@ -30,5 +30,10 @@ structural_int_max = 10    # small integers (orders, exponents) allowed in tool 
 [tools]
 timeout = 20
 
+[physics]
+# Range rules keyed on a quantity's kind: an absolute temperature below 0 K, an efficiency
+# outside [0, 1] or a speed above c fails its node. Off: only dimensional checks run.
+plausibility = true
+
 [store]
 db_path = "~/.sciai/knowledge.db"

@@ -14,6 +14,8 @@ Rules:
 - Expressions use Python syntax with explicit *: 2*x, x**2, sin(x), exp(x), sqrt(x), pi, E, I, oo.
 - Never build on a node that is failed or invalidated.
 - Reuse existing nodes instead of recomputing them.
+- Physics: pass values with units as {"value":20,"unit":"m/s"} copied from the givens or from earlier
+  results; get constants (g, c, h, e, k_B...) from phys.constant, never from memory. Angles keep their unit.
 - Keep "thought" under 20 words.
 
 Tools:

@@ -187,7 +187,7 @@ register(ToolSpec(
                 '"n2": "2", "value": {"value": 100, "unit": "ohm"}}, ...], "ground": "0"}; '
                 'outputs=["V(2)", "I(R1)", "P(R1)"]',
     schema=schema({"netlist": NETLIST, "outputs": OUTPUTS}, ["netlist"]),
-    fn=dc_fn, always_check=True, entity_arg="netlist",
+    fn=dc_fn, always_check=True, entity_arg="netlist", describe_entity=describe_netlist,
     canonical=lambda a: {"netlist": canonical_netlist(a["netlist"]), "outputs": list(a.get("outputs") or [])},
 ))
 

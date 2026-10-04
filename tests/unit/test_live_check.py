@@ -75,3 +75,24 @@ def test_six_problems_of_the_requested_kinds(lc):
     assert [p.key for p in lc.PROBLEMS] == ["integral", "equation", "units", "ode", "hard", "repeat"]
     args = lc.parse_args(["--model", "llama3.1:8b", "--no-think"])
     assert (args.model, args.think) == ("llama3.1:8b", False)
+
+
+def test_physics_suite(lc, make_rt):
+    assert [p.key for p in lc.PHYSICS_PROBLEMS] == ["projectile", "temperature", "photon", "rc", "circuit", "repeat"]
+    assert lc.SUITES["physics"] is lc.PHYSICS_PROBLEMS and lc.parse_args(["--model", "m"]).suite == "math"
+    assert lc.parse_args(["--model", "m", "--suite", "physics"]).suite == "physics"
+    # A quantity answer counts in its shown unit or in SI; tiny values are not "close" to zero.
+    assert lc._numbers({"kind": "quantity", "value": 25.0, "unit": "degC", "si_value": 298.15}) == [25.0, 298.15]
+    assert not lc._close(3.97e-19, 0.0) and lc._close(-0.06, 0.06, signed=False) and not lc._close(-0.06, 0.06)
+
+    temp = {"action": "formalize", "statement": "Convert 25 degC to kelvin.", "problem_type": "thermo",
+            "givens": {"T": {"value": 25, "unit": "degC", "kind": "absolute_temperature"}},
+            "goal": {"tool": "phys.evaluate", "args": {
+                "expr": "T", "values": {"T": {"value": 25, "unit": "degC", "kind": "absolute_temperature"}},
+                "to_unit": "K", "kind": "absolute_temperature"}}}
+    llm = lc.CountingLLM(ScriptedLLM([temp]))
+    row = lc.run_problem(make_rt(llm), llm, lc.PHYSICS_PROBLEMS[1])
+    assert row.passed, row
+    assert row.assumptions == ["ideal gas", "quasi-static process", "closed system"]
+    text = lc.report([row], {"model": "m", "suite": "physics"})
+    assert "## Assumptions accepted automatically" in text and "ideal gas; quasi-static process" in text
