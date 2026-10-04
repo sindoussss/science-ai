@@ -98,7 +98,9 @@ def figure(value: dict[str, Any], width_px: int, height_px: int, *, dpi: int = 1
         ax.spines[side].set_color(c["axis"])
         ax.spines[side].set_linewidth(0.8)
     ax.tick_params(colors=c["axis"], labelcolor=c["text"], labelsize=size - 1, width=0.8, length=3)
-    if not compact:
+    if compact:  # a thumbnail: the shape of the data, no tick labels to crowd it
+        ax.tick_params(labelbottom=False, labelleft=False, length=0)
+    else:
         ax.grid(True, color=c["grid"], linewidth=0.6)
         ax.set_axisbelow(True)
         if v.get("xlabel"):

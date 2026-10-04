@@ -294,8 +294,9 @@ def require_descriptor(data: Any, what: str = "dataset") -> dict[str, Any]:
     return data
 
 
-def load(desc: dict[str, Any], max_rows: int = 5_000_000) -> Any:
-    """The descriptor's frame: the source file read, then its recipe applied. Returns a copy."""
+def load(desc: dict[str, Any], max_rows: int = 5_000_000, use_cache: bool = True) -> Any:
+    """The descriptor's frame: the source file read, then its recipe applied. Returns a copy.
+    ``use_cache=False`` (the UI's preview) reads without keeping the frame in memory."""
     desc = require_descriptor(desc)
     src = desc["source"]
     base_key = source_key(src["sha256"], src["format"], src["options"])
@@ -305,8 +306,10 @@ def load(desc: dict[str, Any], max_rows: int = 5_000_000) -> Any:
             raise DataError(f"the stored copy of {desc.get('name', 'the dataset')} is missing ({src['path']})")
         return read_source(src["path"], src["format"], src["options"], max_rows)
 
-    frame = _cached(base_key, read)
     recipe = list(desc.get("recipe") or [])
+    if not use_cache:
+        return apply_recipe(read(), recipe) if recipe else read()
+    frame = _cached(base_key, read)
     if recipe:
         frame = _cached(descriptor_key(src, recipe), lambda: apply_recipe(frame, recipe))
     return frame.copy()
@@ -539,8 +542,8 @@ def compare_reread(desc: dict[str, Any], reread: dict[str, Any]) -> list[str]:
 
 
 def preview_rows(desc: dict[str, Any], n: int = 50) -> tuple[list[str], list[list[str]]]:
-    """The first rows as text, for the UI's Data tab."""
-    df = load(desc).head(n)
+    """The first rows as text, for the UI's Data tab (read in the UI process, so not cached)."""
+    df = load(desc, use_cache=False).head(n)
     rows = [["" if is_missing(v) else str(v) for v in r]
             for r in df.itertuples(index=False, name=None)]
     return [str(c) for c in df.columns], rows

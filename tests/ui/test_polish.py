@@ -124,13 +124,13 @@ def test_proportions_and_tab_row_at_any_width(fault_window, width):
     assert abs(ws - max(440, min(640, round(0.40 * width)))) <= 1
     assert chat >= 440 and win.chat.width() >= 440
     tabs = win.node_panel.tabs
-    assert [b.text() for b in tabs.buttons] == NODE_TABS  # all five in full
+    assert [tabs.buttons[i].text() for i in tabs.visible_indexes()] == NODE_TABS  # all five in full
     assert tabs.label_gaps() == [18, 18, 18, 18]
     assert tabs.side == 16
-    assert tabs.label_rect(0).left() == 16 and tabs.label_rect(4).right() < tabs.row.width() - 16
+    assert tabs.label_rect(0).left() == 16 and tabs.label_rect(tabs.visible_indexes()[-1]).right() < tabs.row.width() - 16
     assert QFontInfo(tabs.buttons[0].font()).pixelSize() in (13, 14)  # 13.5px (engine rounds the raster)
-    for b in tabs.buttons:
-        assert b.width() >= b.sizeHint().width()  # never clipped
+    for i in tabs.visible_indexes():
+        assert tabs.buttons[i].width() >= tabs.buttons[i].sizeHint().width()  # never clipped
 
 
 # 4. One content column ----------------------------------------------------------------------------
