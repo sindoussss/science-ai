@@ -131,6 +131,12 @@ class Node:
         return result_to_text(self.result)
 
 
+# Chemistry result kinds, named here so the renderer below stays a flat dispatch. The import
+# of the renderer itself is deferred: rdkit is slow to load and the graph model is not.
+CHEM_KINDS = ("molecule", "descriptors", "estimate", "druglike", "neighbours", "substructure",
+              "clusters", "ranking", "literature")
+
+
 def result_to_text(result: dict[str, Any]) -> str:
     kind = result.get("kind")
     value = result.get("value")
@@ -154,6 +160,11 @@ def result_to_text(result: dict[str, Any]) -> str:
             text = summary(value)
         else:
             text = f"plot ({len(value.get('x', []))} points)"
+    elif kind in CHEM_KINDS:
+        from sciai.domains.chem import report as chem_report
+
+        # units live inside each chemistry result, so none is appended below
+        return chem_report.text_for(result)
     elif kind in ("dataset", "table", "stats", "adjusted"):
         from sciai.domains.data import report
 

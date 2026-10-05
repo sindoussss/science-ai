@@ -25,6 +25,15 @@ METHOD_LABEL = {
     "power_balance": "Power balance",
     "series_parallel": "Series/parallel reduction",
     "inputs_verified": "All answer values verified",
+    "reread": "Re-read from the canonical form",
+    "recomputed": "Recomputed from the element table",
+    "invariance": "Invariance under a round trip",
+    "re_evaluated": "Filters re-evaluated",
+    "alt_fingerprint": "Different fingerprint",
+    "atom_by_atom": "Atom by atom",
+    "partition": "Cluster partition",
+    "re_sorted": "Re-sorted from the stored values",
+    "quote_match": "Quotes re-read from the files",
 }
 RULE_LABEL = {"stakes": "Stakes", "surprise": "Surprise", "confidence": "Confidence", "step_type": "Step type",
               "units": "Units"}
@@ -38,6 +47,51 @@ def _short(v: Any, n: int = 18) -> str:
     except ValueError:
         pass
     return s if len(s) <= n else s[: n - 1] + "…"
+
+
+def _chem_agrees(d: dict[str, Any]) -> str:
+    """What a passing chemistry check actually established, in the reader's terms."""
+    if "verified_quotes" in d:
+        n = d["verified_quotes"]
+        return f"Every quoted passage ({n}) was found again at its recorded file and offset."
+    if "verified_matches" in d:
+        n = d["verified_matches"]
+        return f"Every reported match ({n}) was re-walked atom by atom and bond by bond."
+    if "checked" in d:
+        rest = ", ".join(d.get("not_recomputed") or [])
+        tail = f"; {rest} checked for invariance only" if rest else ""
+        return (f"{len(d['checked'])} values recomputed from a pinned element table and a "
+                f"bond walk{tail}.")
+    if "shared_members" in d:
+        return (f"A path-based fingerprint ranks the same {d['shared_members']} members in the "
+                "same order.")
+    if "clusters" in d:
+        return (f"Every structure sits in exactly one of {d['clusters']} clusters, none wider "
+                "than its cutoff allows.")
+    if isinstance(d.get("recomputed"), dict):
+        return "Re-evaluating the filters from the stored descriptor values gives the same verdicts."
+    if isinstance(d.get("recomputed"), list):
+        return "Re-sorting from the stored values gives the same order and the same scores."
+    if "invariants" in d:
+        return "The value is unchanged by a canonical round trip and by renumbering the atoms."
+    return "An independent recomputation agrees."
+
+
+def _chem_disagrees(first: dict[str, Any]) -> str:
+    """The first disagreement a chemistry check found."""
+    if first.get("problem") and "reported" not in first:
+        where = first.get("descriptor") or first.get("rule") or first.get("field") or ""
+        return f"{where}: {first['problem']}" if where else str(first["problem"])
+    name = (first.get("descriptor") or first.get("field") or first.get("rule")
+            or first.get("candidate") or first.get("invariant") or "the result")
+    if "under_invariant" in first:
+        return (f"{name} changes under {first.get('invariant', 'an invariant')}: "
+                f"{_short(first.get('reported'))} became {_short(first['under_invariant'])}.")
+    if "reread" in first:
+        return (f"Re-reading gives a different {name}: {_short(first['reread'])} against the "
+                f"stored {_short(first.get('stored'))}.")
+    return (f"{name}: the result says {_short(first.get('reported'))}, an independent "
+            f"recomputation gives {_short(first.get('recomputed'))}.")
 
 
 def summarize(ev: Evidence) -> str:
@@ -64,6 +118,13 @@ def summarize(ev: Evidence) -> str:
         return f"{how} differs by at most {_short(d['max_error'])}."
     if "reference_si" in d:
         return f"30-digit SI reference {_short(d['reference_si'])} vs result {_short(d.get('claimed_si'))}."
+    if "shared_members" in d:
+        # the similarity ranking check records two orders rather than a disagreement list
+        return _chem_agrees(d) if ev.outcome == "pass" else str(d.get("note") or
+                                                               "The two fingerprints disagree.")
+    if "disagreements" in d:
+        bad = d["disagreements"]
+        return _chem_disagrees(bad[0]) if bad else _chem_agrees(d)
     if d.get("mismatches"):
         m = d["mismatches"][0]
         where = m.get("x", m.get("point", m.get("interval")))

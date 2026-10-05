@@ -51,7 +51,7 @@ WORDING: tuple[tuple[str, re.Pattern[str], str], ...] = (
                                r"excipient|tablet press|capsule fill)\b", re.I),
      "This system screens candidate structures and does not give compounding or formulation "
      "instructions; those belong to a licensed pharmacy or lab."),
-    ("dosing", re.compile(r"\b(dose|dosage|dosing|mg/kg|administer\w*|how much .{0,20}take|"
+    ("dosing", re.compile(r"\b(dose|dosage|dosing|mg/kg|administer\w*|how much .{0,40}take|"
                           r"posolog\w+)\b", re.I),
      "This system predicts molecular properties and cannot give a dose; dosing is a decision "
      "for a clinician."),

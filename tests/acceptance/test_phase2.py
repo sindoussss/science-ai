@@ -251,7 +251,7 @@ def test_rejecting_an_assumption_invalidates_everything_built_on_it(make_rt):
 
     # Nothing is silently reused: the question and the tool call both recompute.
     assert lookup.verified_answer_for_question(rt.repo, PROJECTILE_Q) is None
-    assert lookup.verified_by_fingerprint(rt.repo, fp) is None
+    assert lookup.reusable_by_fingerprint(rt.repo, fp) is None
     llm.steps = [PROJECTILE_FORMAL, CONST_G, range_step, finish_range]
     rt.engine.new_session("c")
     third = rt.controller.run(PROJECTILE_Q)

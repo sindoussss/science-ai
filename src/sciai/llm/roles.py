@@ -28,9 +28,13 @@ class Role:
 # the app itself, never chosen by the model.
 DATA_SOLVERS = ("data.describe", "data.filter", "data.derive", "data.group", "stats.ttest", "stats.mannwhitney",
                 "stats.correlation", "stats.chi2", "stats.anova", "stats.kruskal", "stats.regression")
+# Chemistry tools the model may call. Every one of them is a screening tool; the set is also
+# what ``domains.chem.decline`` consults, so what this list omits is what the system declines.
+CHEM_SOLVERS = ("chem.parse", "chem.descriptors", "chem.logp", "chem.druglike", "chem.similar",
+                "chem.substructure", "chem.cluster", "chem.rank", "chem.lit")
 SOLVERS = ("sympy.", "numeric.evaluate", "numeric.quad", "numeric.root", "units.convert", "plot.",
            "phys.evaluate", "phys.constant", "ode.dsolve", "ode.solve_ivp", "linalg.solve", "circuit.dc",
-           *DATA_SOLVERS)
+           *DATA_SOLVERS, *CHEM_SOLVERS)
 
 ROLES: dict[str, Role] = {
     "formalizer": Role("formalizer", "formalize.md", SOLVERS),
@@ -40,12 +44,14 @@ ROLES: dict[str, Role] = {
     "physics": Role("physics", "physics.md", ("phys.", "ode.", "units.", "sympy.", "numeric.", "plot.")),
     "circuits": Role("circuits", "circuits.md", ("circuit.", "linalg.", "ode.", "plot.")),
     "data": Role("data", "data.md", (*DATA_SOLVERS, "plot.")),
+    "chem": Role("chem", "chem.md", CHEM_SOLVERS),
 }
 
 # After a failed check the retry goes to a specialist role for the failed tool, which
 # must pick a different method or tool (a repeated fingerprint is refused).
 RETRY_ROLE_BY_PREFIX = (("sympy.", "algebra"), ("phys.", "physics"), ("units.", "physics"), ("ode.", "physics"),
-                        ("circuit.", "circuits"), ("linalg.", "circuits"), ("data.", "data"), ("stats.", "data"))
+                        ("circuit.", "circuits"), ("linalg.", "circuits"), ("data.", "data"), ("stats.", "data"),
+                        ("chem.", "chem"))
 
 
 def retry_role(tool: str) -> str:

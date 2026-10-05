@@ -8,9 +8,10 @@ from PyQt6.QtGui import QBrush, QFontMetricsF, QPainter, QPen
 from PyQt6.QtWidgets import QGraphicsItem, QGraphicsSceneMouseEvent, QStyleOptionGraphicsItem, QWidget
 
 from sciai.graph.model import Node, NodeType, Status
-from sciai.ui.canvas.layout import NODE_H, NODE_W, PILL_H, PILL_INSET, PLOT_H
+from sciai.ui.canvas.layout import NODE_H, NODE_W, PILL_H, PILL_INSET, PLOT_H, has_thumbnail
 from sciai.ui.canvas.pins import PIN_D
 from sciai.ui.chips import chip_label, paint_chip
+from sciai.ui.mol_image import mol_image
 from sciai.ui.plot_image import plot_image
 from sciai.ui.theme.theme import Theme
 
@@ -89,7 +90,7 @@ class NodeItem(QGraphicsItem):
     def size(self) -> tuple[float, float]:
         if self.node.type == NodeType.CHECK:
             return NODE_W - 2 * PILL_INSET, PILL_H
-        if self.node.result and self.node.result.get("kind") == "plotspec":
+        if has_thumbnail(self.node):
             return NODE_W, PLOT_H
         return NODE_W, NODE_H
 
@@ -174,8 +175,12 @@ class NodeItem(QGraphicsItem):
         p.drawText(QRectF(x, BODY_Y, tw + 1, BODY_H), Qt.AlignmentFlag.AlignVCenter, prefix)
         x += tw + 6
 
-        if n.result and n.result.get("kind") == "plotspec":
-            self._paint_plot(p, QRectF(PAD, BODY_Y + BODY_H + 4, w - 2 * PAD, h - BODY_Y - BODY_H - 4 - PAD), widget)
+        thumb = QRectF(PAD, BODY_Y + BODY_H + 4, w - 2 * PAD, h - BODY_Y - BODY_H - 4 - PAD)
+        if has_thumbnail(n):
+            if (n.result or {}).get("kind") == "plotspec":
+                self._paint_plot(p, thumb, widget)
+            else:
+                self._paint_molecule(p, thumb, widget)
         else:
             if n.type == NodeType.FINAL and self.math:
                 text, font = self.math, t.ui_font("size_node_title_px", bold=True)
@@ -222,6 +227,21 @@ class NodeItem(QGraphicsItem):
         dpr = max(2.0, widget.devicePixelRatioF() if widget is not None else 1.0)
         img = plot_image(self.theme, self.node.result["value"], int(area.width()), int(area.height()),
                          dpr=dpr, compact=True, key=f"node:{self.node.id}")
+        p.drawImage(area, img)
+
+    def _paint_molecule(self, p: QPainter, area: QRectF, widget: QWidget | None) -> None:
+        """A compact depiction of the structure, at least at 2x so it stays sharp when zoomed.
+
+        Same shape as the plot thumbnail, cached under its own key. A structure that will not
+        draw leaves the body blank rather than taking the node down with it.
+        """
+        dpr = max(2.0, widget.devicePixelRatioF() if widget is not None else 1.0)
+        try:
+            img = mol_image(self.theme, self.node.result["canonical_smiles"],
+                            int(area.width()), int(area.height()), dpr=dpr, compact=True,
+                            key=f"mol:{self.node.id}")
+        except ValueError:
+            return
         p.drawImage(area, img)
 
     # interaction ---------------------------------------------------------

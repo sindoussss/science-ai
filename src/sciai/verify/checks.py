@@ -220,6 +220,52 @@ _PERMUTATION = CheckPlan("permutation", "stats.check_permutation",
 _STATSMODELS = CheckPlan("statsmodels", "stats.check_statsmodels",
                          _stats_for("welch_t", "student_t", "one_sample_t", "paired_t", "anova", "ols"), 3)
 
+# ------------------------------------------------------------------ chem (Phase 4)
+# Every chem solver has exactly one checker, and it is required and must_pass: a chemistry node
+# stays a hypothesis whatever the check says, so the check is not what promotes it. It is what
+# decides whether the hypothesis may be reused at all, which is why none of these is optional.
+def _chem_molecule(a: dict, r: dict) -> dict | None:
+    return {"molecule": r} if r.get("kind") == "molecule" and r.get("canonical_smiles") else None
+
+
+def _chem_descriptors(a: dict, r: dict) -> dict | None:
+    return ({"descriptors": r} if r.get("kind") == "descriptors" and r.get("canonical_smiles")
+            else None)
+
+
+def _chem_logp(a: dict, r: dict) -> dict | None:
+    return ({"estimate": r} if r.get("kind") == "estimate" and r.get("canonical_smiles")
+            else None)
+
+
+def _chem_druglike(a: dict, r: dict) -> dict | None:
+    return {"verdict": r} if r.get("kind") == "druglike" else None
+
+
+def _chem_neighbours(a: dict, r: dict) -> dict | None:
+    return ({"neighbours": r} if r.get("kind") == "neighbours" and r.get("neighbours")
+            else None)
+
+
+def _chem_substructure(a: dict, r: dict) -> dict | None:
+    return ({"matches": r} if r.get("kind") == "substructure" and r.get("canonical_smiles")
+            else None)
+
+
+def _chem_clusters(a: dict, r: dict) -> dict | None:
+    return {"clusters": r} if r.get("kind") == "clusters" and r.get("smiles") else None
+
+
+def _chem_ranking(a: dict, r: dict) -> dict | None:
+    return ({"ranking": r, "candidates": a["candidates"]} if r.get("kind") == "ranking"
+            else None)
+
+
+def _chem_literature(a: dict, r: dict) -> dict | None:
+    return ({"literature": r, "index_path": a["index_path"]} if r.get("kind") == "literature"
+            else None)
+
+
 PLANS: dict[str, list[CheckPlan]] = {
     "data.load": [CheckPlan("reread", "data.check_load", _loaded, 1, required=True, must_pass=True)],
     "data.describe": [CheckPlan("alt_algorithm", "data.check_describe", _table, 1)],
@@ -274,6 +320,24 @@ PLANS: dict[str, list[CheckPlan]] = {
     "numeric.quad": [CheckPlan("alt_algorithm", "numeric.check_quad", _quad)],
     "numeric.root": [CheckPlan("alt_algorithm", "numeric.check_root", _root)],
     "units.convert": [CheckPlan("units", "units.check_convert", _convert)],
+    "chem.parse": [CheckPlan("reread", "chem.check_parse", _chem_molecule, 1,
+                             required=True, must_pass=True)],
+    "chem.descriptors": [CheckPlan("recomputed", "chem.check_descriptors", _chem_descriptors, 1,
+                                   required=True, must_pass=True)],
+    "chem.logp": [CheckPlan("invariance", "chem.check_logp", _chem_logp, 1,
+                            required=True, must_pass=True)],
+    "chem.druglike": [CheckPlan("re_evaluated", "chem.check_druglike", _chem_druglike, 1,
+                                required=True, must_pass=True)],
+    "chem.similar": [CheckPlan("alt_fingerprint", "chem.check_similar", _chem_neighbours, 2,
+                               required=True, must_pass=True)],
+    "chem.substructure": [CheckPlan("atom_by_atom", "chem.check_substructure",
+                                    _chem_substructure, 1, required=True, must_pass=True)],
+    "chem.cluster": [CheckPlan("partition", "chem.check_cluster", _chem_clusters, 2,
+                               required=True, must_pass=True)],
+    "chem.rank": [CheckPlan("re_sorted", "chem.check_rank", _chem_ranking, 1,
+                            required=True, must_pass=True)],
+    "chem.lit": [CheckPlan("quote_match", "chem.check_lit", _chem_literature, 2,
+                           required=True, must_pass=True)],
 }
 
 

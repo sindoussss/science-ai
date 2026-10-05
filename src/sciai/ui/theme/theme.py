@@ -275,7 +275,14 @@ QFrame#popover, QFrame#pinEditor {{ background: {c['panel']}; border: 1px solid 
 QFrame#legendRow {{ background: {c['panel']}; border: none; border-top: 1px solid {c['border']}; }}
 QFrame#outputBox {{ background: {c['panel']}; border: 1px solid {c['border']}; border-radius: 8px; }}
 QToolTip {{ background: {c['panel']}; color: {c['text']}; border: 1px solid {c['border']}; padding: 4px; }}
-QLabel#dataName {{ font-size: {title}; font-weight: 600; }}
+QLabel#dataName, QLabel#molIdentity {{ font-size: {title}; font-weight: 600; }}
+/* The hypothesis banner is pinned above the Molecule tab's scroll area, so it cannot be
+   scrolled away. Plain style: a subtle fill and a single hairline under it, no coloured
+   border, and a check badge that is the same neutral chip as every other status chip. */
+QWidget#molBanner {{ background: {c['subtle']}; border-bottom: 1px solid {c['border']}; }}
+QWidget#molBanner > QLabel {{ background: transparent; }}
+QLabel#molHypothesis {{ color: {c['text_secondary']}; font-size: {small}; }}
+QLabel#molChecks {{ color: {c['text_secondary']}; font-size: {small}; }}
 QTableWidget#dataPreview {{ background: {c['panel']}; border: 1px solid {c['border']}; border-radius: 8px;
     gridline-color: {c['border']}; font-family: "{mono}"; font-size: {mono_px}; color: {c['table_text']};
     selection-background-color: {c['accent_soft']}; selection-color: {c['text']}; }}

@@ -7,14 +7,17 @@ step, its status and the evidence that verified it.
 Phase 1 covers mathematics. Phase 2 adds physics and engineering: values with units, physical
 constants (CODATA 2022 from the pinned SciPy), ODEs (closed form and numeric, each checking the
 other), linear systems and DC circuits, with modelling assumptions you confirm or reject. Phase 3
-(this branch) adds data: import CSV, TSV and Excel files, then describe, filter, group, test
+adds data: import CSV, TSV and Excel files, then describe, filter, group, test
 (t-tests, Mann-Whitney, ANOVA, Kruskal-Wallis, chi-square, correlation) and fit (least squares),
 with effect sizes, confidence intervals, assumption diagnostics, Holm correction when several tests
-run on the same data, and plots. Design: [docs/design.md](docs/design.md).
+run on the same data, and plots. Phase 4 (this branch) adds computational chemistry for drug
+discovery: structure identity, descriptors, drug-likeness filters, similarity and clustering,
+substructure search, candidate ranking and a local literature search. Design:
+[docs/design.md](docs/design.md).
 
 Opening an older knowledge store upgrades it in place, one schema version at a time (v1 to v2 to
-v3). A backup is written next to it first (`knowledge.db.v1.bak`, `knowledge.db.v2.bak`); if an
-upgrade fails, that step is rolled back and the store keeps working at its previous version.
+v3 to v4). A backup is written next to it first (`knowledge.db.v1.bak`, `knowledge.db.v2.bak`); if
+an upgrade fails, that step is rolled back and the store keeps working at its previous version.
 
 ## Setup on Windows (PowerShell)
 
@@ -105,6 +108,45 @@ Then ask about the file by name: "In trial.csv, is the score different between g
 
 `[data] max_rows` (5,000,000) and `[data] max_file_mb` (400) refuse files too large to load safely.
 
+## Working with molecules
+
+Ask about a structure by writing it as SMILES, a molblock or an InChI: "What are the molecular
+weight and TPSA of `Cn1cnc2c1c(=O)n(C)c(=O)n2C`?". Every structure is standardized on the way in
+(largest fragment, neutralized, canonical tautomer where one is defined) and read twice: the
+canonical SMILES is parsed again from scratch and the import is refused unless the InChIKey,
+formula and atom and bond counts agree both times.
+
+What this part of the system does is screening, and the whole of it is computational:
+
+- **Identity and descriptors**: canonical SMILES, InChI and InChIKey, formula, molecular weight,
+  monoisotopic mass, heavy atoms, rings, HBD, HBA, TPSA, rotatable bonds, sp3 fraction.
+- **Drug-likeness**: the Lipinski and Veber filters, with the failing terms named. logP is a
+  Crippen estimate and is labelled a single-method estimate, because there is no genuinely
+  different second method here to compare it against.
+- **Similarity and clustering**: Tanimoto over Morgan fingerprints, Butina clusters, SMARTS
+  substructure search, and a weighted ranking over stored descriptor values.
+- **Literature**: a search over PDFs and text files you put in `$HOME\.sciai\corpus`, returning
+  quoted passages with their file, page and offset. Methods and procedure sections are never
+  indexed, so they cannot be searched or returned.
+
+Three things hold whatever the question is:
+
+- **Every chemistry result is a hypothesis.** It is never promoted to verified, by any route: the
+  store, the graph engine and the verifier each refuse it independently. An answer built on one is
+  not verified and says so. Checks still run, and every one of them is required; what passing buys
+  is that the result may be reused, still labelled a hypothesis. The **Molecule** tab shows which
+  checks passed next to that label.
+- **The system declines what it cannot do.** A request is declined when no registered tool
+  performs the operation it asks for, which is the whole test. Synthesis routes, reaction
+  procedures, compounding instructions and doses are declined because nothing here produces them.
+  Keywords only choose which sentence you read; they never decide whether to decline, so asking
+  about a compound named in a synthesis paper is answered normally.
+- **A restricted-structure screen** runs on every structure that enters, and again on every
+  neighbour a library search returns. It refuses chemical-weapon agents and their close analogs,
+  and refuses ranking criteria that ask for toxicity or lethality to be maximized. It is a safety
+  net, not a guarantee: it is partial by construction, and it is not a substitute for the legal
+  and ethical review that real work in this area needs.
+
 **Thinking models.** `think = false` (the default) turns reasoning off for models that have it
 (qwen3, deepseek-r1). Any `<think>...</think>` text a model still writes is removed before its JSON
 action is parsed. If you turn thinking on, also raise `num_predict` (for example to 2048), because
@@ -128,6 +170,7 @@ python scripts\live_check.py --model qwen2.5:7b-instruct-q4_K_M
 python scripts\live_check.py --model qwen3:8b --think
 python scripts\live_check.py --model qwen2.5:7b-instruct-q4_K_M --suite physics
 python scripts\live_check.py --model qwen2.5:7b-instruct-q4_K_M --suite data
+python scripts\live_check.py --model qwen2.5:7b-instruct-q4_K_M --suite chem
 ```
 
 It runs six fixed problems (a definite integral, an equation, a unit conversion, an ODE, one hard
@@ -146,6 +189,14 @@ assumption checklist, so the defaults are accepted and listed in the report.
 R's sleep as an Excel sheet) and asks five questions about them (a Welch t-test, a one-way ANOVA, a
 regression slope, a t-test on the Excel sheet, group means) plus a repeat of the first. Answers are
 checked against R's reference values to 4 significant digits. It saves `results\<model>-data.md`.
+
+`--suite chem` first standardizes five spellings of aspirin with no model call, and reports whether
+they collapse to one InChIKey (if they do not, nothing else the suite says about chemistry means
+anything). It then asks eight questions: identity, descriptors against reference values, a logP, a
+drug-likeness verdict, a similarity ranking over a three-member library, two requests nothing can
+serve (a synthesis route and a dose, which must be declined with no tool run at all) and a repeat
+to test reuse. A chemistry answer passes only if it comes back a hypothesis; an answer that comes
+back verified is a failure. It saves `results\<model>-chem.md`.
 
 ## Linux / macOS
 

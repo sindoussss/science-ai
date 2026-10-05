@@ -34,11 +34,14 @@ from sciai.ui.layout_util import FlowLayout, clear_layout
 from sciai.ui.theme.theme import Theme
 from sciai.ui.workspace.code_view import CodeView
 from sciai.ui.workspace.data_view import DataView, PlotTab, dataset_of, plot_of
+from sciai.ui.workspace.mol_view import MoleculeTab, molecule_of
 from sciai.ui.workspace.review import ReviewPanel
 from sciai.ui.workspace.subtabs import SubTabs
 
-TAB_NAMES = ("Code", "Data", "Plot", "Execution Log", "Messages", "Environment", "Review")
-SHORT_TAB_NAMES = {"Execution Log": "Log"}  # drawn only when six tabs don't fit (narrowest workspace)
+TAB_NAMES = ("Code", "Data", "Plot", "Molecule", "Execution Log", "Messages", "Environment",
+             "Review")
+# Drawn only when the visible tabs don't fit (the narrowest workspace with the most tabs).
+SHORT_TAB_NAMES = {"Execution Log": "Log", "Molecule": "Mol"}
 
 
 def _ts(t: float) -> str:
@@ -273,16 +276,18 @@ class NodePanel(QWidget):
         self.delete_action.triggered.connect(lambda: self.node and self.delete.emit(self.node.id))
         self.reject_btn.clicked.connect(lambda: self.node and self.reject_assumption.emit(self.node.id))
 
-        # Data and Plot -------------------------------------------------------------------
+        # Data, Plot and Molecule ---------------------------------------------------------
         self.data_view = DataView(t)
         self.plot_tab = PlotTab(t)
+        self.mol_tab = MoleculeTab(t)
 
         for w, name in ((code_page, "Code"), (self.data_view, "Data"), (self.plot_tab, "Plot"),
-                        (_scroll(log_body), "Execution Log"), (msg_page, "Messages"),
-                        (_scroll(env_body), "Environment"), (review_page, "Review")):
+                        (self.mol_tab, "Molecule"), (_scroll(log_body), "Execution Log"),
+                        (msg_page, "Messages"), (_scroll(env_body), "Environment"),
+                        (review_page, "Review")):
             self.tabs.addTab(w, name, SHORT_TAB_NAMES.get(name))
-        self.tabs.setTabVisible(self.tabs.indexOf("Data"), False)
-        self.tabs.setTabVisible(self.tabs.indexOf("Plot"), False)
+        for hidden in ("Data", "Plot", "Molecule"):
+            self.tabs.setTabVisible(self.tabs.indexOf(hidden), False)
         self._pending_desc: dict[str, Any] | None = None
         self.tabs.currentChanged.connect(self._tab_changed)
         self._set_enabled(False)
@@ -306,14 +311,22 @@ class NodePanel(QWidget):
     def _data_and_plot(self, node: Node | None) -> None:
         plot = plot_of(node)
         desc = None if plot is not None else dataset_of(node, self.repo.get_node)
+        molecule = molecule_of(node)
         if plot is not None and node is not None:
             name = f"{self.handles.get(node.id, 'plot')}_{node.title}".replace(" ", "_")
             self.plot_tab.show_plot(plot, "".join(ch for ch in name if ch.isalnum() or ch in "_-") or "plot")
         else:
             self.plot_tab.show_plot(None)
         self._pending_desc = desc
+        if molecule is not None and node is not None:
+            name = f"{self.handles.get(node.id, 'molecule')}_{node.title}".replace(" ", "_")
+            clean = "".join(ch for ch in name if ch.isalnum() or ch in "_-") or "molecule"
+            self.mol_tab.show_molecule(molecule, node.result or {}, clean)
+        else:
+            self.mol_tab.show_molecule(None)
         self.tabs.setTabVisible(self.tabs.indexOf("Plot"), plot is not None)
         self.tabs.setTabVisible(self.tabs.indexOf("Data"), desc is not None)
+        self.tabs.setTabVisible(self.tabs.indexOf("Molecule"), molecule is not None)
         self._tab_changed(self.tabs.currentIndex())
 
     def _tab_changed(self, i: int) -> None:
@@ -437,6 +450,7 @@ class NodePanel(QWidget):
 
         evidence = self.repo.evidence_for(node.id)
         self.review.show_node(node, evidence)
+        self.mol_tab.set_checks(evidence)
         outcomes = {e.outcome for e in evidence}
         if "fail" in outcomes:
             mark, color = "x_circle", t.hex("text")

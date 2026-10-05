@@ -154,6 +154,10 @@ class DataView(QWidget):
         self.desc = desc
         self._token += 1
         if self.schema is not None:
+            # removeWidget before dropping the parent: the layout otherwise keeps an item
+            # pointing at a widget deleteLater has freed, and the next layout pass calls
+            # minimumSizeHint() on it. That is a segfault, not an exception.
+            self.schema_host.removeWidget(self.schema)
             self.schema.setParent(None)
             self.schema.deleteLater()
             self.schema = None

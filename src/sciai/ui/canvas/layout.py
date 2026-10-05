@@ -22,10 +22,23 @@ ROW_GAP = 44
 ASSUMPTION_GAP = 12
 
 
+# Result kinds drawn as a picture in the node body rather than as a line of text. Both the
+# layout height and the item's own size() read this, so a new kind cannot get a thumbnail in
+# one place and a 64px box in the other.
+THUMBNAIL_KINDS = ("plotspec", "molecule")
+
+
+def has_thumbnail(node: Node) -> bool:
+    result = node.result or {}
+    if result.get("kind") not in THUMBNAIL_KINDS:
+        return False
+    return result.get("kind") != "molecule" or bool(result.get("canonical_smiles"))
+
+
 def node_height(node: Node) -> float:
     if node.type == NodeType.CHECK:
         return PILL_H
-    if node.result and node.result.get("kind") == "plotspec":
+    if has_thumbnail(node):
         return PLOT_H
     return NODE_H
 
