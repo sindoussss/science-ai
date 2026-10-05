@@ -16,6 +16,7 @@ library search.
 """
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from sciai.domains.chem import descriptors as desc
@@ -352,6 +353,59 @@ register(ToolSpec(
     description="re-sort the ranking from the stored values and require the same order",
     schema=schema({"ranking": {"type": "object"}, "candidates": CANDIDATES},
                   ["ranking", "candidates"]), fn=check_rank_fn,
+))
+
+
+# ================================================================== chem.lit
+def _index(path: str) -> Any:
+    from sciai.domains.chem import corpus
+
+    text = Path(path).read_text(encoding="utf-8")
+    return corpus.Index.from_json(text)
+
+
+def lit_fn(args: dict[str, Any]) -> dict[str, Any]:
+    from sciai.domains.chem import corpus
+
+    index = _index(args["index_path"])
+    value = corpus.search(index, args["query"],
+                          top_k=int(args.get("top_k", corpus.MAX_HITS)),
+                          cap=int(args.get("max_chars", corpus.MAX_PASSAGE_CHARS)))
+    dropped = len(value["dropped_passages"])
+    return _result(value,
+                   summary=(f"{len(value['hits'])} passages from {len(value['files'])} files"
+                            + (f"; {dropped} were dropped by the classifier" if dropped else "")
+                            + (f"; {value['excluded_sections']} procedure sections were never "
+                               "indexed" if value["excluded_sections"] else "")))
+
+
+register(ToolSpec(
+    name="chem.lit", domain=Domain.CHEM, kind="solver",
+    description="search the local literature corpus; returns quoted passages with file, page "
+                "and offset (methods and procedure sections are not indexed)",
+    schema=schema({"query": {"type": "string", "maxLength": 400},
+                   "index_path": {"type": "string", "maxLength": 1000},
+                   "top_k": {"type": "integer", "minimum": 1, "maximum": 20},
+                   "max_chars": {"type": "integer", "minimum": 100, "maximum": 4000}},
+                  ["query", "index_path"]),
+    fn=lit_fn, always_check=True,
+))
+
+
+def check_lit_fn(args: dict[str, Any]) -> dict[str, Any]:
+    from sciai.domains.chem import corpus
+
+    index = _index(args["index_path"])
+    return {"result": corpus.check_quotes(args["literature"], index), "confidence": None,
+            "meta": {}}
+
+
+register(ToolSpec(
+    name="chem.check_lit", domain=Domain.CHEM, kind="checker",
+    description="re-open every cited file and require the quoted text at its recorded offset",
+    schema=schema({"literature": {"type": "object"},
+                   "index_path": {"type": "string", "maxLength": 1000}},
+                  ["literature", "index_path"]), fn=check_lit_fn,
 ))
 
 

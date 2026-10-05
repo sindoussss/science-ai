@@ -65,6 +65,11 @@ class ChemConfig:
     # analog of a restricted one and is refused. Lower refuses more; see domains/chem/restricted.
     analog_tanimoto: float = 0.70
     max_passage_chars: int = 1200   # a literature passage is cut to this before it is shown
+    corpus_dir: str = "~/.sciai/corpus"  # imported documents and their index
+
+    @property
+    def corpus_path(self) -> Path:
+        return Path(self.corpus_dir).expanduser()
 
 
 @dataclass

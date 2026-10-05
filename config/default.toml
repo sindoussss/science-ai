@@ -51,6 +51,9 @@ analog_tanimoto = 0.70
 # A literature passage is cut to this many characters before it is shown or stored, so an
 # imported document cannot push a wall of text through the answer.
 max_passage_chars = 1200
+# Imported documents and the search index built from them. Methods and procedure
+# sections are dropped before the index is written, so they cannot be searched.
+corpus_dir = "~/.sciai/corpus"
 
 [store]
 db_path = "~/.sciai/knowledge.db"
