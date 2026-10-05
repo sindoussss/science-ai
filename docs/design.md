@@ -207,6 +207,8 @@ Two code guards, no trust in prompting:
 
 `controller/lookup.py` runs first, with no model call: normalized problem text and its fingerprint are matched against `verified` nodes. On a hit, the verified node is linked into the session and answered from. If the problem needs translation to a formal form, the model may be called once to formalize it, but never to do the math; the lookup then matches on the fingerprint. Unverified matches come back as `hint` nodes with `needs_recheck=1`.
 
+Phase 4 widens this one step, and only for `chem`: a chemistry node is never `verified`, so for those the test is that every check that ran passed and none failed. Such a node is linked in and reused exactly as a verified one would be, and it stays a `hypothesis` there, so the answer built on it is not verified either (`controller/lookup.py: reusable_by_fingerprint`).
+
 ### 3.8 Failure ladder (in `verify/ladder.py`)
 
 1. Check fails -> retry once with a different method or role (new version of the same lineage).

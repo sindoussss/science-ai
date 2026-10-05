@@ -4,7 +4,7 @@ from __future__ import annotations
 from typing import Any
 
 from sciai.graph.fingerprint import question_fingerprint, tool_fingerprint
-from sciai.graph.model import Node, Status
+from sciai.graph.model import Domain, Node, Status
 from sciai.store.repository import Repository
 from sciai.tools.sandbox import Runner
 
@@ -22,9 +22,23 @@ def canonical_fingerprint(runner: Runner, tool: str, args: dict[str, Any]) -> tu
     return tool_fingerprint(tool, out.value["canonical"]), None
 
 
-def verified_by_fingerprint(repo: Repository, fp: str) -> Node | None:
+def reusable_by_fingerprint(repo: Repository, fp: str) -> Node | None:
+    """An earlier result this call may reuse.
+
+    Normally that means a verified node. A chemistry node is never verified, so for those the
+    test is the one its phase was given instead: every check that ran passed, and none failed.
+    What that buys is reuse, not belief, and the node comes back still a hypothesis.
+    """
     hits = repo.find_by_fingerprint(fp, [Status.VERIFIED])
-    return hits[0] if hits else None
+    if hits:
+        return hits[0]
+    for node in repo.find_by_fingerprint(fp, [Status.HYPOTHESIS]):
+        if node.domain != Domain.CHEM:
+            continue
+        outcomes = {ev.outcome for ev in repo.evidence_for(node.id)}
+        if "pass" in outcomes and "fail" not in outcomes:
+            return node
+    return None
 
 
 def hint_by_fingerprint(repo: Repository, fp: str) -> Node | None:

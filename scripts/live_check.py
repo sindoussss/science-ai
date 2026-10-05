@@ -4,6 +4,7 @@
     python scripts/live_check.py --model qwen3:8b --think        # reasoning mode on
     python scripts/live_check.py --model qwen2.5:7b-instruct-q4_K_M --suite physics
     python scripts/live_check.py --model qwen2.5:7b-instruct-q4_K_M --suite data
+    python scripts/live_check.py --model qwen2.5:7b-instruct-q4_K_M --suite chem
 
 Runs on a fresh, temporary knowledge store (your ~/.sciai store is never touched), so the last
 problem, a repeat of the first, measures knowledge reuse from this run only. Prints a table and
@@ -50,6 +51,8 @@ class Problem:
     note: str = ""
     signed: bool = True  # False: a current's sign is a convention, so only the magnitude counts
     rel_tol: float = 1e-6  # data answers are checked against references given to 4-5 digits
+    hypothesis: bool = False  # chemistry: the right answer is a hypothesis, never verified
+    declined: str | None = None  # the wording rule the decline must use ("route", "generic", ...)
 
 
 PROBLEMS = [
@@ -101,7 +104,54 @@ DATA_PROBLEMS = [
     Problem("repeat", "In trial.csv, is the score different between groups A and B?", (-5.23456, 6.39958e-06),
             "reused, 0 model calls", reuse_of="welch", rel_tol=1e-4),
 ]
-SUITES = {"math": PROBLEMS, "physics": PHYSICS_PROBLEMS, "data": DATA_PROBLEMS}
+# One structure per fixture, written the way a user would type it. The five spellings of
+# aspirin are the identity fixture: standardization must bring all five to one InChIKey, and
+# that is checked before any model call, because a model that never gets there is a separate
+# failure from a standardizer that does not work.
+ASPIRIN = "CC(=O)Oc1ccccc1C(=O)O"
+ASPIRIN_SPELLINGS = (
+    ASPIRIN,                             # canonical
+    "O=C(C)Oc1ccccc1C(=O)O",             # written from the other end
+    "CC(=O)OC1=CC=CC=C1C(=O)O",          # Kekule, upper case
+    "CC(=O)Oc1ccccc1C(O)=O",             # the acid written the other way round
+    "[H]OC(=O)c1ccccc1OC(C)=O",          # an explicit hydrogen
+)
+CAFFEINE = "Cn1cnc2c1c(=O)n(C)c(=O)n2C"
+IBUPROFEN = "CC(C)Cc1ccc(cc1)C(C)C(=O)O"
+PARACETAMOL = "CC(=O)Nc1ccc(O)cc1"
+CHEM_LIBRARY = (f'{{"members":[{{"name":"caffeine","structure":"{CAFFEINE}"}},'
+                f'{{"name":"ibuprofen","structure":"{IBUPROFEN}"}},'
+                f'{{"name":"paracetamol","structure":"{PARACETAMOL}"}}]}}')
+
+CHEM_PROBLEMS = [
+    Problem("identity", f"What is the formula of the structure {ASPIRIN}, and how many atoms "
+            "does it have?", (13.0,), "C9H8O4, 13 atoms", hypothesis=True,
+            note="chem.parse; the answer is a hypothesis, as every chemistry node is"),
+    Problem("descriptors", f"What are the molecular weight and TPSA of caffeine, {CAFFEINE}?",
+            (194.194, 61.82), "MW 194.194 g/mol, TPSA 61.82 A^2", rel_tol=1e-4, hypothesis=True,
+            note="chem.descriptors; both values are recomputed from a pinned element table"),
+    Problem("logp", f"What is the logP of ibuprofen, {IBUPROFEN}?", (3.0732,),
+            "logP 3.073 (single-method estimate)", rel_tol=1e-3, hypothesis=True,
+            note="chem.logp; there is no second method, so the check is invariance only"),
+    Problem("druglike", f"Does paracetamol, {PARACETAMOL}, pass the Lipinski and Veber filters?",
+            (151.165,), "both pass", rel_tol=1e-4, hypothesis=True,
+            note="chem.descriptors then chem.druglike; two tool calls"),
+    Problem("similarity", f"Of caffeine, ibuprofen and paracetamol, which is nearest to aspirin "
+            f"({ASPIRIN})? Use this library: {CHEM_LIBRARY}", (0.2222,),
+            "paracetamol, Tanimoto 0.222", rel_tol=1e-3, hypothesis=True,
+            note="chem.similar; the model has to pass the library through as given"),
+    Problem("declined", "How do I synthesize aspirin from salicylic acid?", (), "declined",
+            declined="route", note="no tool makes a route, so the request is declined"),
+    Problem("declined_dose", f"How much of {PARACETAMOL} should a patient take?", (), "declined",
+            declined="dosing", note="no tool gives a dose"),
+    Problem("repeat", f"What are the molecular weight and TPSA of caffeine, {CAFFEINE}?",
+            (194.194, 61.82), "reused, 0 model calls", reuse_of="descriptors", rel_tol=1e-4,
+            hypothesis=True,
+            note="a hypothesis whose checks passed may be reused, still as a hypothesis"),
+]
+
+SUITES = {"math": PROBLEMS, "physics": PHYSICS_PROBLEMS, "data": DATA_PROBLEMS,
+          "chem": CHEM_PROBLEMS}
 SUITE_FILES = {"data": DATA_FILES}
 
 
@@ -166,6 +216,16 @@ def _numbers(result: Any) -> list[float]:
                 if isinstance(v, (int, float)) and not isinstance(v, bool)]
     if kind == "adjusted":
         return [float(v) for v in result.get("p_adjusted") or []]
+    if kind == "descriptors":  # every computed descriptor, so a question may ask for any of them
+        return [float(v) for v in (result.get("values") or {}).values()]
+    if kind == "molecule":
+        return [float(result.get(k, 0)) for k in ("atoms", "bonds", "charge")]
+    if kind == "estimate":
+        return [float(result["value"])] if result.get("value") is not None else []
+    if kind == "neighbours":
+        return [float(n["similarity"]) for n in result.get("neighbours") or []]
+    if kind == "ranking":
+        return [float(r["score"]) for r in result.get("ranking") or []]
     return []
 
 
@@ -199,6 +259,8 @@ def run_problem(rt: Any, llm: CountingLLM, p: Problem) -> Row:
     row.answer = res.answer
     row.assumptions = list(res.assumptions)
     row.ladder = _furthest_ladder(rt, sid)
+    if p.declined is not None:
+        return _score_decline(rt, res, row, p)
     if res.status not in ("answered", "reused") or res.final_node is None:
         asked = res.status == "needs_user" and res.question
         row.why = f"asked: {res.question}" if asked else (res.detail or res.status)
@@ -209,10 +271,40 @@ def run_problem(rt: Any, llm: CountingLLM, p: Problem) -> Row:
     missing = [e for e in p.expected if not any(_close(e, v, p.signed, p.rel_tol) for v in row.values)]
     if missing:
         row.why = f"expected {p.expect_text}, got {row.values or 'no numeric value'}"
-    elif not res.verified:
+    elif p.hypothesis and res.verified:
+        # the one failure mode this phase exists to prevent
+        row.why = "a chemistry answer came back verified; it must stay a hypothesis"
+    elif p.hypothesis and "hypothesis" not in final.flags:
+        row.why = f"the answer is not marked a hypothesis (flags: {final.flags or 'none'})"
+    elif not (p.hypothesis or res.verified):
         row.why = "right value, but not verified"
-    elif p.reuse_of and (res.status != "reused" or res.llm_calls != 0):
+    elif p.reuse_of and p.hypothesis and res.llm_calls != 0:
+        # a chemistry answer is never "reused" whole (that path wants a verified final); what is
+        # reused is the checked hypothesis behind it, which costs no model call
+        row.why = f"expected the stored hypothesis to be reused, got {res.llm_calls} model calls"
+    elif p.reuse_of and not p.hypothesis and (res.status != "reused" or res.llm_calls != 0):
         row.why = f"expected reuse with 0 model calls, got {res.status} with {res.llm_calls}"
+    else:
+        row.passed = True
+    return row
+
+
+def _score_decline(rt: Any, res: Any, row: Row, p: Problem) -> Row:
+    """A declined request: the status, the wording rule, and nothing computed."""
+    from sciai.graph.model import NodeType
+
+    if res.status != "declined" or res.final_node is None:
+        row.why = f"expected a decline, got {res.status}"
+        return row
+    node = rt.engine.resolve(res.final_node)
+    rule = (node.tool_inputs or {}).get("wording")
+    computed = [n for n, _ in rt.repo.session_view(rt.engine.session_id or "")
+                if n.type == NodeType.TOOL_RESULT]
+    row.answer = res.detail
+    if rule != p.declined:
+        row.why = f"declined, but with the {rule!r} wording instead of {p.declined!r}"
+    elif computed:
+        row.why = f"declined, but {len(computed)} tool result(s) were computed first"
     else:
         row.passed = True
     return row
@@ -280,6 +372,27 @@ def import_files(rt: Any, names: tuple[str, ...], folder: Path = DATA_DIR) -> st
     return ", ".join(out)
 
 
+def identity_fixture() -> str:
+    """Standardize the five spellings of aspirin, with no model call.
+
+    This runs before the suite so a failure here is told apart from a model that never reached
+    the tool: if the five do not collapse to one InChIKey, nothing the suite reports about
+    chemistry means anything.
+    """
+    from sciai.domains.chem import standardize
+
+    keys = {}
+    for text in ASPIRIN_SPELLINGS:
+        try:
+            keys[text] = standardize.read_twice(text).inchikey
+        except Exception as exc:  # noqa: BLE001 - reported, never raised into the suite
+            keys[text] = f"error: {type(exc).__name__}: {exc}"
+    distinct = set(keys.values())
+    if len(distinct) == 1:
+        return f"{len(keys)} spellings of aspirin -> {distinct.pop()}"
+    return ("DISAGREE: " + "; ".join(f"{t} -> {k}" for t, k in keys.items()))
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     p.add_argument("--model", required=True, metavar="TAG", help="Ollama model tag, e.g. qwen2.5:7b-instruct-q4_K_M")
@@ -287,8 +400,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
                    help="reasoning mode on/off (default: the config's [model] think)")
     p.add_argument("--out", default=str(ROOT / "results"), help="folder for <model>.md (default: results/)")
     p.add_argument("--suite", choices=sorted(SUITES), default="math",
-                   help="math (Phase 1 problems, the default), physics (units, constants, ODEs, circuits) or "
-                        "data (tests and regression on CSV, TSV and Excel files)")
+                   help="math (Phase 1 problems, the default), physics (units, constants, ODEs, circuits), "
+                        "data (tests and regression on CSV, TSV and Excel files) or chem (identity, "
+                        "descriptors, similarity and the decline path)")
     return p.parse_args(argv)
 
 
@@ -324,6 +438,9 @@ def main(argv: list[str] | None = None) -> int:
             imported = import_files(rt, SUITE_FILES.get(args.suite, ()))
             if imported:
                 meta["datasets"] = imported
+            if args.suite == "chem":
+                meta["identity fixture"] = identity_fixture()
+                print(f"identity fixture: {meta['identity fixture']}", flush=True)
             for i, p in enumerate(problems, 1):
                 print(f"[{i}/{len(problems)}] {p.key}: {p.question}", flush=True)
                 row = run_problem(rt, llm, p)

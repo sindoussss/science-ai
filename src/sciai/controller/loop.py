@@ -19,6 +19,7 @@ from sciai.config import Config
 from sciai.controller import lookup
 from sciai.controller.answer import render
 from sciai.controller.provenance import numbers_in, unsourced
+from sciai.domains.chem import decline as chem_decline
 from sciai.domains.data.datasets import load_args
 from sciai.domains.data.report import diagnostic_text
 from sciai.domains.physics import quantities as Q
@@ -64,9 +65,18 @@ SIGNIFICANT = re.compile(r"\bsignifican", re.IGNORECASE)
 SYMBOL_ASSUMPTIONS = ("real", "positive", "negative", "nonnegative", "nonpositive", "integer", "nonzero")
 
 
+class Declined(Exception):
+    """A request nothing registered can serve. Carries the refusal, not an error message."""
+
+    def __init__(self, refusal: chem_decline.Decline) -> None:
+        super().__init__(refusal.message)
+        self.refusal = refusal
+
+
 @dataclass
 class TaskResult:
-    status: str  # answered | reused | escalated | needs_user | step_limit | stopped | error | rejected
+    status: str  # answered | reused | escalated | needs_user | step_limit | stopped | error
+                 #        | rejected | declined
     answer: str = ""
     final_node: str | None = None
     verified: bool = False
@@ -197,6 +207,11 @@ class Controller:
 
         def validate(a: Action) -> None:
             goal = a.get("goal")
+            # Capability first, and before the goal is validated: a request nothing serves is
+            # declined once, rather than sent back to the model as an invalid action.
+            refusal = self._refusal(a.get("operation"), goal, question)
+            if refusal is not None:
+                raise Declined(refusal)
             if goal:
                 spec = self._validate_tool_call(goal.get("tool", ""), goal.get("args", {}), role.name)
                 self._validate_data_args(spec, goal.get("args", {}), question)
@@ -211,6 +226,8 @@ class Controller:
                                                 if data else "") + "Reply with one JSON formalize action."
         try:
             action = self._ask(role.name, user, ("formalize",), validate)
+        except Declined as exc:
+            return self._decline(exc.refusal)
         except ActionError as exc:
             self._error_node("could not formalize the question", str(exc), [])
             return TaskResult("error", detail=f"formalization failed: {exc}")
@@ -297,7 +314,7 @@ class Controller:
         fp, err = lookup.canonical_fingerprint(self.runner, tool, run_args)
         if fp is None:
             return None, f"The goal could not be parsed ({err}). Plan the first step."
-        hit = lookup.verified_by_fingerprint(self.engine.repo, fp)
+        hit = lookup.reusable_by_fingerprint(self.engine.repo, fp)
         if hit is not None:
             handle = self.engine.link_existing(hit.id)
             return self._finalize(root, "Answer: {{%s}}" % handle, [handle]), ""
@@ -503,7 +520,7 @@ class Controller:
             if any(v.fingerprint == fp for v in prev):
                 raise StepError("a retry must use a different method or tool than the failed attempt")
         else:
-            hit = lookup.verified_by_fingerprint(self.engine.repo, fp)
+            hit = lookup.reusable_by_fingerprint(self.engine.repo, fp)
             if hit is not None:
                 handle = self.engine.link_existing(hit.id)
                 for dep in self.engine.dependencies(hit.id):  # its dataset and test assumptions
@@ -511,7 +528,8 @@ class Controller:
                             and dep not in self.engine.nodes:
                         self.engine.link_existing(dep)
                 self._last_tool_node = hit
-                return StepOutcome([f"Reused verified result {handle} = {hit.display_result()}"])
+                kind = "hypothesis" if hit.status == Status.HYPOTHESIS else "verified result"
+                return StepOutcome([f"Reused {kind} {handle} = {hit.display_result()}"])
         hint = lookup.hint_by_fingerprint(self.engine.repo, fp)
 
         sources: list[Any] = [root.content, _problem_sources(root)]
@@ -630,7 +648,11 @@ class Controller:
         h = self.engine.handle(node.id)
         why = f" (risk: {rules})" if rules else ""
         if outcome.status == "verified":
-            return StepOutcome([f"{h} verified by {outcome.runs[-1].plan.method}{why}."])
+            method = outcome.runs[-1].plan.method
+            if node.status == Status.HYPOTHESIS:
+                # chem: the check passed, but passing is not what makes a node believable here
+                return StepOutcome([f"{h}: the {method} check passed; it stays a hypothesis{why}."])
+            return StepOutcome([f"{h} verified by {method}{why}."])
         if outcome.status in ("inconclusive", "unavailable"):
             return StepOutcome([f"{h} could not be checked conclusively; it stays unverified{why}."])
         decision = ladder.decide(self.engine, node)
@@ -700,12 +722,21 @@ class Controller:
             content += "\n" + "\n".join(f"Caution: {d}." for d in doubtful)
         if family_note:
             content += f"\n{family_note}"
+        # A chemistry node is a hypothesis however well its checks went, so an answer built on
+        # one is never verified. Saying only "unverified inputs" would read as a failed check;
+        # the answer says what it actually rests on instead.
+        hypotheses = [n for n in nodes if n.status == Status.HYPOTHESIS]
+        if hypotheses:
+            content += ("\nHypothesis: this answer rests on computed properties of candidates "
+                        "nobody has tested.")
         final = Node(session_id="", layer=Layer.REASONING, type=NodeType.FINAL, title="Answer",
                      content=content,
                      tool_inputs={"template": template, "answer_nodes": [n.id for n in nodes],
                                   "assumptions": assumed})
         if not all_verified:
-            final.flags = ["unverified inputs"]
+            unverified = [n for n in nodes if n.status != Status.HYPOTHESIS]
+            final.flags = (["unverified inputs"] if unverified else []) + \
+                          (["hypothesis"] if hypotheses else [])
         dep_ids = list(dict.fromkeys([n.id for n in nodes] + [root.id]))
         self.engine.add_node(final, dep_ids)
         if all_verified:
@@ -775,7 +806,7 @@ class Controller:
         for n in self.engine.nodes.values():
             if n.fingerprint == fp and n.type == NodeType.ENTITY and n.status not in TERMINAL_BAD:
                 return n
-        hit = lookup.verified_by_fingerprint(self.engine.repo, fp)
+        hit = lookup.reusable_by_fingerprint(self.engine.repo, fp)
         if hit is not None:
             self.engine.link_existing(hit.id)
             return self.engine.resolve(hit.id)
@@ -889,6 +920,38 @@ class Controller:
             template += "\nCorrected for multiple tests: {{%s}}" % h
             handles.append(h)
         return template, handles, note
+
+    # ----------------------------------------------------------------- decline
+    def _refusal(self, operation: str | None, goal: dict[str, Any] | None,
+                 asked: str) -> chem_decline.Decline | None:
+        """The refusal for a request nothing can serve, or None.
+
+        The test is capability, never wording: ``decline_for`` asks the registry whether a tool
+        performs the operation, so an operation the model names and no tool provides is declined
+        because nothing does it. The keyword rules inside only choose which sentence is printed.
+        A goal naming a chemistry tool that is not registered is the same thing said another
+        way, and is declined on the same grounds.
+        """
+        if operation:
+            refusal = chem_decline.decline_for(operation, asked)
+            if refusal is not None:
+                return refusal
+        tool = (goal or {}).get("tool") or ""
+        if tool.startswith("chem."):
+            try:
+                get_tool(tool)
+            except KeyError:
+                return chem_decline.decline_for(tool.split(".", 1)[1], asked)
+        return None
+
+    def _decline(self, refusal: chem_decline.Decline) -> TaskResult:
+        """Record what was asked, which rule chose the wording, and what was available instead."""
+        node = Node(session_id="", layer=Layer.REASONING, type=NodeType.HINT,
+                    title="Declined", content=refusal.node_content(), role="controller",
+                    tool_inputs={"operation": refusal.operation, "wording": refusal.wording,
+                                 "asked": refusal.asked, "served": list(refusal.served)})
+        self.engine.add_node(node)
+        return TaskResult("declined", detail=refusal.message, final_node=node.id)
 
     def _error_node(self, title: str, message: str, deps: list[str], tool: str | None = None,
                     args: dict[str, Any] | None = None) -> Node:

@@ -378,6 +378,8 @@ class MainWindow(QMainWindow):
                 self._select_and_show(result.final_node)
         elif result.status == "needs_user":
             self.chat.add_assistant(result.question or "", caption)
+        elif result.status == "declined":
+            self.chat.add_assistant(result.detail, caption)
         elif result.status == "escalated":
             self._report_steps(result)
             self.chat.add_assistant(f"{result.detail} The conflicting results are outlined in red on the graph.",

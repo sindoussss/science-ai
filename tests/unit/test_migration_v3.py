@@ -9,7 +9,7 @@ import pytest
 
 from sciai.store import db as db_module
 from sciai.store import migrate
-from sciai.store.db import Database
+from sciai.store.db import SCHEMA_VERSION, Database
 from sciai.store.repository import DatasetRecord, Repository
 
 TABLES = ("sessions", "nodes", "session_links", "edges", "evidence", "tool_runs", "messages",
@@ -68,7 +68,7 @@ def v2(tmp_path):
 def test_v2_store_gains_datasets_and_keeps_everything(v2, tmp_path):
     path, before = v2
     db = Database(path)
-    assert db.query_one("SELECT value FROM meta WHERE key='schema_version'")["value"] == "3"
+    assert db.query_one("SELECT value FROM meta WHERE key='schema_version'")["value"] == str(SCHEMA_VERSION)
     assert counts(db._conn) == before
     assert db._conn.execute("SELECT COUNT(*) FROM verified_nodes").fetchone()[0] == 1
     assert db._conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
@@ -91,7 +91,7 @@ def test_a_failed_v3_step_leaves_a_working_v2_store(v2, monkeypatch):
     conn.close()
     monkeypatch.undo()
     Database(path).close()  # a later attempt succeeds
-    assert version(path) == "3"
+    assert version(path) == str(SCHEMA_VERSION)
 
 
 def test_integrity_failure_restores_the_v2_backup(v2, monkeypatch):

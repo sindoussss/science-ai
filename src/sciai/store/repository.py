@@ -110,6 +110,51 @@ def _dataset_from_row(row: sqlite3.Row) -> DatasetRecord:
                          schema=json.loads(row["schema"]), imported_at=row["imported_at"])
 
 
+@dataclass
+class MoleculeRecord:
+    """A standardized structure the store has seen (see the molecules table in schema.sql).
+
+    This is bookkeeping, not a claim. It records which structure was computed on, so an answer
+    can say so; every claim about the molecule is a node, where the chem rule keeps it a
+    hypothesis. There is no status field here for that reason.
+    """
+
+    inchikey: str
+    skeleton: str
+    canonical_smiles: str
+    inchi: str
+    formula: str
+    atoms: int
+    bonds: int
+    charge: int
+    input_form: str
+    standardized: list[str] = field(default_factory=list)
+    screen: dict[str, Any] = field(default_factory=dict)
+    name: str | None = None
+    source_file: str | None = None
+    source_sha256: str | None = None
+    members: int | None = None
+    imported_at: float = field(default_factory=now)
+
+    def summary(self) -> str:
+        """What the model may see: identity and counts, never an invented property."""
+        changed = f", standardized: {', '.join(self.standardized)}" if self.standardized else ""
+        named = f"{self.name}: " if self.name else ""
+        return (f"{named}{self.formula}, {self.atoms} atoms, charge {self.charge}, "
+                f"InChIKey {self.inchikey}{changed}")
+
+
+def _molecule_from_row(row: sqlite3.Row) -> MoleculeRecord:
+    return MoleculeRecord(
+        inchikey=row["inchikey"], skeleton=row["skeleton"],
+        canonical_smiles=row["canonical_smiles"], inchi=row["inchi"], formula=row["formula"],
+        atoms=row["atoms"], bonds=row["bonds"], charge=row["charge"], name=row["name"],
+        input_form=row["input_form"], standardized=json.loads(row["standardized"]),
+        screen=json.loads(row["screen"]), source_file=row["source_file"],
+        source_sha256=row["source_sha256"], members=row["members"],
+        imported_at=row["imported_at"])
+
+
 class Repository:
     def __init__(self, db: Database) -> None:
         self.db = db
@@ -466,3 +511,57 @@ class Repository:
             if any(n and re.search(r"(?<![\w.-])" + re.escape(n) + r"(?!\w|[.-]\w)", lower) for n in names):
                 out.append(rec)
         return out
+
+    # ---------------------------------------------------------------- molecules (Phase 4)
+    def add_molecule(self, rec: MoleculeRecord) -> MoleculeRecord:
+        """Insert, or on seeing the same InChIKey again refresh its name and import time.
+
+        The same structure supplied twice is one row, which is what lets a session reuse a
+        molecule it already standardized and screened rather than doing both again.
+        """
+        with self.db.tx() as c:
+            c.execute(
+                "INSERT INTO molecules (inchikey, skeleton, canonical_smiles, inchi, formula, atoms, "
+                "bonds, charge, name, input_form, standardized, screen, source_file, source_sha256, "
+                "members, imported_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+                "ON CONFLICT(inchikey) DO UPDATE SET name=COALESCE(excluded.name, molecules.name), "
+                "source_file=COALESCE(excluded.source_file, molecules.source_file), "
+                "source_sha256=COALESCE(excluded.source_sha256, molecules.source_sha256), "
+                "imported_at=excluded.imported_at",
+                (rec.inchikey, rec.skeleton, rec.canonical_smiles, rec.inchi, rec.formula,
+                 rec.atoms, rec.bonds, rec.charge, rec.name, rec.input_form,
+                 json.dumps(rec.standardized), json.dumps(rec.screen, sort_keys=True),
+                 rec.source_file, rec.source_sha256, rec.members, rec.imported_at))
+        return rec
+
+    def molecule(self, inchikey: str) -> MoleculeRecord | None:
+        row = self.db.query_one("SELECT * FROM molecules WHERE inchikey=?", (inchikey,))
+        return None if row is None else _molecule_from_row(row)
+
+    def molecule_by_name(self, name: str) -> MoleculeRecord | None:
+        """The most recent molecule with that name, matched case-insensitively."""
+        row = self.db.query_one("SELECT * FROM molecules WHERE lower(name)=lower(?) "
+                                "ORDER BY imported_at DESC, rowid DESC LIMIT 1", (name,))
+        return None if row is None else _molecule_from_row(row)
+
+    def molecules_with_skeleton(self, skeleton: str) -> list[MoleculeRecord]:
+        """Every stereoisomer and salt form of one substance, oldest first."""
+        rows = self.db.query("SELECT * FROM molecules WHERE skeleton=? ORDER BY imported_at",
+                             (skeleton.split("-")[0],))
+        return [_molecule_from_row(r) for r in rows]
+
+    def recent_molecules(self, limit: int = 50) -> list[MoleculeRecord]:
+        rows = self.db.query("SELECT * FROM molecules ORDER BY imported_at DESC, rowid DESC "
+                             "LIMIT ?", (limit,))
+        return [_molecule_from_row(r) for r in rows]
+
+    def delete_molecule(self, inchikey: str) -> None:
+        with self.db.tx() as c:
+            c.execute("DELETE FROM molecules WHERE inchikey=?", (inchikey,))
+
+    def nodes_about(self, inchikey: str) -> list[Node]:
+        """Nodes whose tool inputs or result name this structure, in any session."""
+        rows = self.db.query(
+            f"SELECT {_NODE_COLS} FROM nodes WHERE json_extract(result, '$.inchikey')=? "
+            "ORDER BY created_at", (inchikey,))
+        return [node_from_row(r) for r in rows]

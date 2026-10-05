@@ -21,6 +21,11 @@ dependencies = [
     "pandas>=2.1",
     "openpyxl>=3.1",   # Excel import, and the independent re-read of .xlsx files
     "statsmodels==0.15.0",  # pinned: the independent checker for regression, ANOVA and t-tests
+    # Pinned: descriptor values and fingerprint bits must not shift between releases, or a
+    # fingerprint stops matching its stored node and a check starts disagreeing with itself.
+    # Wheels cover CPython 3.10-3.14 on Windows, macOS and Linux, so no compiler is needed.
+    "rdkit==2026.3.6",
+    "pypdf>=6.1",      # local text extraction for the literature corpus; pure Python
 ]
 
 [project.optional-dependencies]

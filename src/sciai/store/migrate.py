@@ -122,6 +122,17 @@ def migrate_v1_to_v2(conn: sqlite3.Connection, db_path: str, schema_sql: str) ->
     return backup
 
 
+_V4_DDL = re.compile(r"CREATE TABLE IF NOT EXISTS molecules \(.*?\n\);|"
+                     r"CREATE INDEX IF NOT EXISTS idx_molecules_\w+ ON molecules\([^)]*\);", re.DOTALL)
+
+
+def v4_statements(schema_sql: str) -> list[str]:
+    statements = _V4_DDL.findall(schema_sql)
+    if not any(s.startswith("CREATE TABLE") for s in statements):
+        raise MigrationError("schema.sql has no molecules table definition")
+    return statements
+
+
 _V3_DDL = re.compile(r"CREATE TABLE IF NOT EXISTS datasets \(.*?\n\);|"
                      r"CREATE INDEX IF NOT EXISTS idx_datasets_\w+ ON datasets\([^)]*\);", re.DOTALL)
 
@@ -170,4 +181,48 @@ def migrate_v2_to_v3(conn: sqlite3.Connection, db_path: str, schema_sql: str) ->
     result = [r[0] for r in conn.execute("PRAGMA integrity_check").fetchall()]
     if result != ["ok"]:
         raise IntegrityFailure(f"integrity_check after the v3 migration: {'; '.join(result[:5])}", backup)
+    return backup
+
+
+def migrate_v3_to_v4(conn: sqlite3.Connection, db_path: str, schema_sql: str) -> Path | None:
+    """Adds the molecules table. Returns the backup path (None for an in-memory store).
+
+    Same order as the v3 migration, which Yeri fixed in Phase 2: back up with VACUUM INTO
+    (the store is in WAL mode), turn foreign keys off outside the transaction because
+    deferring them fails at commit, apply the DDL, check that no index, trigger or view
+    definition was lost, then foreign_key_check and integrity_check. The chem rule lives in
+    the nodes table's CHECK and in the chem_never_verified trigger, so the lost-objects
+    comparison is what proves this migration did not drop it; a test asserts a migrated store
+    still refuses a verified chem row.
+    """
+    backup = None
+    if db_path != ":memory:":
+        backup = backup_path(Path(db_path), 3)
+        conn.execute("VACUUM INTO ?", (str(backup),))
+    statements = v4_statements(schema_sql)
+    conn.execute("PRAGMA foreign_keys = OFF")
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            before = _schema_objects(conn)
+            for sql in statements:
+                conn.execute(sql)
+            lost = before - _schema_objects(conn)
+            if lost:
+                raise MigrationError(f"{len(lost)} index/trigger/view definition(s) changed: "
+                                     f"{sorted(name for _, name, _ in lost)}")
+            problems = conn.execute("PRAGMA foreign_key_check").fetchall()
+            if problems:
+                raise MigrationError(f"foreign_key_check found {len(problems)} broken reference(s), "
+                                     f"first: {tuple(problems[0])}")
+            conn.execute("UPDATE meta SET value = '4' WHERE key = 'schema_version'")
+            conn.execute("COMMIT")
+        except BaseException:
+            conn.execute("ROLLBACK")
+            raise
+    finally:
+        conn.execute("PRAGMA foreign_keys = ON")
+    result = [r[0] for r in conn.execute("PRAGMA integrity_check").fetchall()]
+    if result != ["ok"]:
+        raise IntegrityFailure(f"integrity_check after the v4 migration: {'; '.join(result[:5])}", backup)
     return backup

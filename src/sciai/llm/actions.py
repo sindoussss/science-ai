@@ -41,6 +41,10 @@ ACTION_SCHEMA: dict[str, Any] = {
                    "additionalProperties": {"type": "object"}},
         "modelling_assumptions": {"type": "array", "maxItems": 8,
                                   "items": {"type": "string", "maxLength": 120}},
+        # formalize, Phase 4: the chemistry operation the question asks for. The controller
+        # declines when no registered tool performs it, so an operation the model invents
+        # (a synthesis route, a dose) is declined by having no tool, not by its wording.
+        "operation": {"type": "string", "maxLength": 40},
     },
     "required": ["action"],
 }

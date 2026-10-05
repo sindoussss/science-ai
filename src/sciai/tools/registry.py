@@ -111,6 +111,7 @@ def load_builtin_tools() -> None:
         return
     _loaded = True
     from sciai.tools import (  # noqa: F401
+        chem_tools,
         circuit_tools,
         data_tools,
         linalg_tools,

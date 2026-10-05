@@ -1,5 +1,6 @@
--- Science AI knowledge store, schema version 3 (v2 adds the 'assumption' node type,
--- v3 adds the datasets table). Older stores are migrated on open by sciai.store.migrate.
+-- Science AI knowledge store, schema version 4 (v2 adds the 'assumption' node type,
+-- v3 adds the datasets table, v4 adds the molecules table). Older stores are migrated on
+-- open by sciai.store.migrate.
 -- The database is global across sessions: cascades cross session boundaries.
 
 CREATE TABLE IF NOT EXISTS meta (
@@ -162,3 +163,29 @@ CREATE TABLE IF NOT EXISTS datasets (
     imported_at   REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_datasets_name ON datasets(name, imported_at);
+
+-- Phase 4. One row per standardized structure the store has seen, keyed by InChIKey so a
+-- stereoisomer is its own row. skeleton is the key's first block, shared by the salt forms and
+-- stereoisomers of one substance, which is what reuse and the restricted screen key on.
+-- There is deliberately no status column here: a molecule record is bookkeeping, and every
+-- claim about a molecule lives in nodes, where the chem rule keeps it a hypothesis.
+CREATE TABLE IF NOT EXISTS molecules (
+    inchikey        TEXT PRIMARY KEY,
+    skeleton        TEXT NOT NULL,
+    canonical_smiles TEXT NOT NULL,
+    inchi           TEXT NOT NULL,
+    formula         TEXT NOT NULL,
+    atoms           INTEGER NOT NULL CHECK (atoms > 0),
+    bonds           INTEGER NOT NULL CHECK (bonds >= 0),
+    charge          INTEGER NOT NULL,
+    name            TEXT,                -- what the user called it, if they named it
+    input_form      TEXT NOT NULL,       -- the structure as it was supplied
+    standardized    TEXT NOT NULL,       -- JSON: the steps standardization took, in order
+    screen          TEXT NOT NULL,       -- JSON: the restricted screen's verdict on the way in
+    source_file     TEXT,                -- the imported file it came from, if any
+    source_sha256   TEXT,
+    members         INTEGER,             -- set for a library record, null for one structure
+    imported_at     REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_molecules_skeleton ON molecules(skeleton);
+CREATE INDEX IF NOT EXISTS idx_molecules_name ON molecules(name, imported_at);

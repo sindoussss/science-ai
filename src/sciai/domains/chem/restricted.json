@@ -1,0 +1,89 @@
+{
+  "version": 1,
+  "about": [
+    "The restricted-structure table for sciai.domains.chem.restricted.",
+    "identity.refuse / identity.flag hold salted SHA-256 hashes of InChIKey skeleton blocks, so",
+    "this file is not a readable list of structures. The salt is not a secret and is not meant to",
+    "be: it keeps the file from being a browsable catalogue, nothing more.",
+    "fingerprints.refuse holds base64 Morgan fingerprints (radius 2, 2048 bits) for close-analog",
+    "screening. Both lists ship empty, because populating them means authoring a list of agent",
+    "identifiers; the loader and the matching are tested with synthetic entries instead.",
+    "alerts hold generic SMARTS for whole chemical families. Each carries its own action: refuse",
+    "for families with no therapeutic use, flag for chemotypes that are working medicine and are",
+    "only worth labelling. A flag never blocks the work.",
+    "Coverage is partial by construction. The protection that does not depend on coverage is that",
+    "no tool in this phase plans a reaction, writes a procedure, or gives a dose."
+  ],
+  "salt": "sciai-restricted-v1",
+  "identity": {
+    "refuse": [],
+    "flag": []
+  },
+  "fingerprints": {
+    "refuse": []
+  },
+  "alerts": [
+    {
+      "id": "op_phosphonofluoridate",
+      "action": "refuse",
+      "smarts": "[#6][P;X4](=[O,S])[F]",
+      "note": "Organophosphonofluoridate family.",
+      "why": "A nerve-agent family under the public treaty schedules, with no therapeutic use."
+    },
+    {
+      "id": "op_phosphoramidocyanidate",
+      "action": "refuse",
+      "smarts": "[P;X4](=[O,S])([NX3])[CX2]#[NX1]",
+      "note": "Phosphoramidocyanidate family.",
+      "why": "A nerve-agent family under the public treaty schedules, with no therapeutic use."
+    },
+    {
+      "id": "op_aminoethanethiolate",
+      "action": "refuse",
+      "smarts": "[#6][P;X4](=[O,S])[SX2][CX4][CX4][NX3]",
+      "note": "Phosphonothiolate family with an aminoethyl thiol ester.",
+      "why": "A nerve-agent family under the public treaty schedules, with no therapeutic use."
+    },
+    {
+      "id": "sulfur_mustard",
+      "action": "refuse",
+      "smarts": "[Cl,Br,I][CX4H2][CX4H2][SX2][CX4H2][CX4H2][Cl,Br,I]",
+      "note": "Bis(2-haloethyl) sulfide family.",
+      "why": "A vesicant family with no therapeutic use. The nitrogen analogue is a separate, flagged entry because that one is working medicine."
+    },
+    {
+      "id": "chlorovinyl_arsenic",
+      "action": "refuse",
+      "smarts": "[As;X3,X4]([Cl,Br,F])[#6]",
+      "note": "Organoarsenic halide family.",
+      "why": "A vesicant family. The arsenic drugs in use (arsenic trioxide, organoarsenic antiparasitics) carry no arsenic-halogen bond, so they do not match."
+    },
+    {
+      "id": "nitrogen_mustard",
+      "action": "flag",
+      "smarts": "[Cl,Br][CX4H2][CX4H2][NX3]([CX4H2][CX4H2][Cl,Br])",
+      "note": "Bis(2-haloethyl)amine chemotype, an alkylating class used in oncology.",
+      "why": "Flagged rather than refused: cyclophosphamide, chlorambucil, melphalan and bendamustine all match it, and refusing the pattern would block ordinary oncology work."
+    },
+    {
+      "id": "anilidopiperidine",
+      "action": "flag",
+      "smarts": "[#6]C(=O)[NX3]([c])[CX4]1[CX4][CX4][NX3][CX4][CX4]1",
+      "note": "4-anilidopiperidine chemotype, the fentanyl-class analgesic scaffold.",
+      "why": "Flagged rather than refused: this is a scheduled but widely used analgesic class, so the work proceeds with the node labelled."
+    },
+    {
+      "id": "thiophosphoryl_ester",
+      "action": "flag",
+      "smarts": "[P;X4](=[S])([O,S,N])[O,S,N]",
+      "note": "Organothiophosphate ester chemotype.",
+      "why": "Flagged rather than refused: the family covers agricultural chemistry that is legitimate to study, while sharing a scaffold with the refused nerve-agent entries above."
+    }
+  ],
+  "not_screenable": [
+    "Protein and alkaloid toxins (ricin, abrin, saxitoxin and the like) are not usefully matched",
+    "by a small-molecule SMARTS or a Morgan fingerprint. They are out of reach of this screen;",
+    "the capability decline in decline.py is what covers requests about them, because no tool",
+    "here does anything with a protein sequence."
+  ]
+}

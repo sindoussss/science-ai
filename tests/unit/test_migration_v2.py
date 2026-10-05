@@ -83,10 +83,14 @@ def test_migration_keeps_every_row_and_object(v1):
 
     db = Database(path)
     conn = db._conn
-    assert db.query_one("SELECT value FROM meta WHERE key='schema_version'")["value"] == str(SCHEMA_VERSION) == "3"
+    assert db.query_one("SELECT value FROM meta WHERE key='schema_version'")["value"] == str(SCHEMA_VERSION) == "4"
     assert counts(conn) == before
-    # the three node indexes, the chem trigger, the extra view and trigger, plus v3's datasets index
-    assert schema_objects(conn) == objects | {("index", "idx_datasets_name")}
+    # the three node indexes, the chem trigger, the extra view and trigger, plus the indexes
+    # v3 and v4 add. Every object the v1 store had must still be here: that comparison is what
+    # proves a migration did not quietly drop the chem rule's trigger.
+    assert schema_objects(conn) == objects | {("index", "idx_datasets_name"),
+                                              ("index", "idx_molecules_skeleton"),
+                                              ("index", "idx_molecules_name")}
     assert "'assumption'" in nodes_sql(conn)
     assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
     assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
@@ -145,7 +149,7 @@ def test_a_failure_partway_rolls_back_to_a_working_v1(v1, monkeypatch, tmp_path)
 
     monkeypatch.undo()
     db = Database(path)  # a later attempt succeeds, with a new backup name
-    assert db.query_one("SELECT value FROM meta WHERE key='schema_version'")["value"] == "3"
+    assert db.query_one("SELECT value FROM meta WHERE key='schema_version'")["value"] == str(SCHEMA_VERSION)
     assert len(list(tmp_path.glob("knowledge.db.v1*.bak"))) == 2
     db.close()
 
@@ -168,12 +172,12 @@ def test_integrity_failure_restores_the_backup(v1, monkeypatch):
     check.close()
 
 
-def test_new_store_is_v3_and_newer_store_is_refused(tmp_path):
+def test_new_store_is_current_and_newer_store_is_refused(tmp_path):
     db = Database(tmp_path / "fresh.db")
-    assert db.query_one("SELECT value FROM meta WHERE key='schema_version'")["value"] == "3"
+    assert db.query_one("SELECT value FROM meta WHERE key='schema_version'")["value"] == str(SCHEMA_VERSION)
     db.close()
     conn = sqlite3.connect(tmp_path / "fresh.db", isolation_level=None)
-    conn.execute("UPDATE meta SET value = '4'")
+    conn.execute("UPDATE meta SET value = ?", (str(SCHEMA_VERSION + 1),))
     conn.close()
     with pytest.raises(RuntimeError, match="newer than this app"):
         Database(tmp_path / "fresh.db")

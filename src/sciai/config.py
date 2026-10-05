@@ -60,6 +60,19 @@ class DataConfig:
 
 
 @dataclass
+class ChemConfig:
+    # Tanimoto (Morgan radius 2, 2048 bits) at or above which a structure counts as a close
+    # analog of a restricted one and is refused. Lower refuses more; see domains/chem/restricted.
+    analog_tanimoto: float = 0.70
+    max_passage_chars: int = 1200   # a literature passage is cut to this before it is shown
+    corpus_dir: str = "~/.sciai/corpus"  # imported documents and their index
+
+    @property
+    def corpus_path(self) -> Path:
+        return Path(self.corpus_dir).expanduser()
+
+
+@dataclass
 class StoreConfig:
     db_path: str = "~/.sciai/knowledge.db"
 
@@ -72,6 +85,7 @@ class Config:
     tools: ToolsConfig = field(default_factory=ToolsConfig)
     physics: PhysicsConfig = field(default_factory=PhysicsConfig)
     data: DataConfig = field(default_factory=DataConfig)
+    chem: ChemConfig = field(default_factory=ChemConfig)
     store: StoreConfig = field(default_factory=StoreConfig)
 
     @property
