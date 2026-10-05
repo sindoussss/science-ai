@@ -14,9 +14,14 @@ from importlib import resources
 from pathlib import Path
 from typing import Iterator
 
-from sciai.store.migrate import IntegrityFailure, migrate_v1_to_v2, migrate_v2_to_v3
+from sciai.store.migrate import (
+    IntegrityFailure,
+    migrate_v1_to_v2,
+    migrate_v2_to_v3,
+    migrate_v3_to_v4,
+)
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 class Database:
@@ -52,6 +57,9 @@ class Database:
                 version = 2
             if version == 2:
                 self._upgrade(lambda: migrate_v2_to_v3(self._conn, self.path, schema), 3)
+                version = 3
+            if version == 3:
+                self._upgrade(lambda: migrate_v3_to_v4(self._conn, self.path, schema), 4)
             self._conn.executescript(schema)
             if version is None:
                 self._conn.execute(
