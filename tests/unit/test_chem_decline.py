@@ -82,12 +82,34 @@ def test_no_operation_maps_to_a_route_procedure_or_dose() -> None:
         assert not any(b in tool for b in banned), tool
 
 
-def test_registered_chem_tools_match_the_capability_map() -> None:
-    """No chem tool may exist that the capability map does not account for."""
+def test_registered_chem_solvers_match_the_capability_map() -> None:
+    """No chem solver may exist that the capability map does not account for.
+
+    Checkers are left out: they are not capabilities a request can ask for, they only ever run
+    against a solver's own result.
+    """
     from sciai.tools.registry import all_tools
 
-    registered = {t.name for t in all_tools() if t.name.startswith("chem.")}
-    assert registered <= set(D.OPERATION_TOOLS.values()), registered - set(D.OPERATION_TOOLS.values())
+    solvers = {t.name for t in all_tools()
+               if t.name.startswith("chem.") and t.kind == "solver"}
+    assert solvers, "the chem solvers should be registered by now"
+    assert solvers <= set(D.OPERATION_TOOLS.values()), solvers - set(D.OPERATION_TOOLS.values())
+
+
+def test_every_chem_solver_is_always_checked() -> None:
+    from sciai.tools.registry import all_tools
+
+    for tool in all_tools():
+        if tool.name.startswith("chem.") and tool.kind == "solver":
+            assert tool.requires_check({}), f"{tool.name} must always be checked"
+
+
+def test_no_chem_tool_returns_a_confidence() -> None:
+    """A confidence on a chem result would read as a probability that the molecule works."""
+    from sciai.tools import chem_tools
+
+    out = chem_tools.parse_fn({"structure": "CCO"})
+    assert out["confidence"] is None
 
 
 # --- multi-turn and document-sourced text ----------------------------------------------------
