@@ -207,6 +207,10 @@ class MainWindow(QMainWindow):
             self._open_session(sessions[0]["id"])
         else:
             self._new_session()
+        if rt.purged_on_start:
+            self.chat.add_notice(
+                f"{rt.purged_on_start} stored node(s) were removed: they came from questions "
+                "answered with values the question did not contain, which this version refuses.")
         if rt.flagged_on_start:
             self.chat.add_notice(f"{rt.flagged_on_start} unverified result(s) from earlier sessions are flagged "
                                  "for re-check and will not be reused silently.")
@@ -378,7 +382,7 @@ class MainWindow(QMainWindow):
                 self._select_and_show(result.final_node)
         elif result.status == "needs_user":
             self.chat.add_assistant(result.question or "", caption)
-        elif result.status == "declined":
+        elif result.status in ("declined", "out_of_scope"):
             self.chat.add_assistant(result.detail, caption)
         elif result.status == "escalated":
             self._report_steps(result)

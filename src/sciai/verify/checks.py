@@ -220,6 +220,45 @@ _PERMUTATION = CheckPlan("permutation", "stats.check_permutation",
 _STATSMODELS = CheckPlan("statsmodels", "stats.check_statsmodels",
                          _stats_for("welch_t", "student_t", "one_sample_t", "paired_t", "anova", "ols"), 3)
 
+# ---------------------------------------------------- recipe formulas (closed forms)
+# Each of these solvers computes one named quantity, so its arguments are what the checker
+# needs: it recomputes the same number by a different method from the same inputs.
+def _formula_args(*names: str) -> Builder:
+    def build(a: dict, r: dict) -> dict | None:
+        if r.get("kind") != "quantity":
+            return None
+        out = {n: a[n] for n in names if a.get(n) is not None}
+        if not all(n in out for n in names[:1]):
+            return None
+        return {**out, "si_value": float(r["si_value"])}
+    return build
+
+
+def _area(a: dict, r: dict) -> dict | None:
+    if r.get("kind") != "number" or not r.get("crossings"):
+        return None
+    return {"curve1": a["curve1"], "curve2": a["curve2"], "var": a["var"],
+            "area": float(r["value"]), "crossings": list(r["crossings"])}
+
+
+
+def _target_unit(a: dict, r: dict) -> dict | None:
+    """The result is in the unit the question asked for.
+
+    ``to_unit`` is the recipe's required target-unit slot, so this plan exists for every
+    solver that takes one. A right-dimension-wrong-unit result (96560.64 m/h for a question
+    that said m/s) reads as the answer and is wrong, so this is required and must_pass.
+    """
+    target = a.get("to_unit")
+    unit = r.get("unit") if r.get("kind") == "quantity" else r.get("units")
+    if not target or not unit:
+        return None
+    return {"target_unit": str(target), "unit": str(unit)}
+
+
+_TARGET = CheckPlan("target_unit", "units.check_target", _target_unit, 0,
+                    required=True, must_pass=True)
+
 # ------------------------------------------------------------------ chem (Phase 4)
 # Every chem solver has exactly one checker, and it is required and must_pass: a chemistry node
 # stays a hypothesis whatever the check says, so the check is not what promotes it. It is what
@@ -281,6 +320,7 @@ PLANS: dict[str, list[CheckPlan]] = {
     "stats.regression": [_FORMULA, _STATSMODELS],
     "stats.adjust": [CheckPlan("alt_algorithm", "stats.check_adjust", _adjusted, 1, required=True, must_pass=True)],
     "phys.evaluate": [
+        _TARGET,
         CheckPlan("plausibility", "phys.check_plausibility", _plausibility, 0, required=True, must_pass=True),
         CheckPlan("dimensional", "phys.check_dimensions", _phys_dims, 1, required=True, must_pass=True),
         CheckPlan("alt_algorithm", "phys.check_value", _phys_value, 2),
@@ -290,7 +330,10 @@ PLANS: dict[str, list[CheckPlan]] = {
         CheckPlan("known_value", "phys.check_constant", _constant, 1, required=True, must_pass=True),
     ],
     "ode.dsolve": [
-        CheckPlan("residual", "ode.check_residual", _ode_residual, 2, required=True),
+        # must_pass: the residual check is also the initial-condition check, and a solution that
+        # does not satisfy its own initial condition is not a solution to this problem
+        CheckPlan("residual", "ode.check_residual", _ode_residual, 2, required=True,
+                  must_pass=True),
         CheckPlan("symbolic_vs_numeric", "ode.check_numeric", _ode_numeric, 3, required=True),
     ],
     "ode.solve_ivp": [
@@ -319,7 +362,34 @@ PLANS: dict[str, list[CheckPlan]] = {
     "numeric.evaluate": [CheckPlan("alt_algorithm", "numeric.check_value", _value)],
     "numeric.quad": [CheckPlan("alt_algorithm", "numeric.check_quad", _quad)],
     "numeric.root": [CheckPlan("alt_algorithm", "numeric.check_root", _root)],
-    "units.convert": [CheckPlan("units", "units.check_convert", _convert)],
+    "units.convert": [_TARGET, CheckPlan("units", "units.check_convert", _convert, 1,
+                                         required=True, must_pass=True)],
+    "phys.projectile_range": [
+        _TARGET,
+        CheckPlan("plausibility", "phys.check_plausibility", _plausibility, 0,
+                  required=True, must_pass=True),
+        CheckPlan("simulation", "phys.check_projectile_range",
+                  _formula_args("v0", "angle", "g"), 1, required=True, must_pass=True),
+    ],
+    "phys.photon_energy": [
+        _TARGET,
+        CheckPlan("plausibility", "phys.check_plausibility", _plausibility, 0,
+                  required=True, must_pass=True),
+        CheckPlan("known_value", "phys.check_photon_energy",
+                  _formula_args("wavelength"), 1, required=True, must_pass=True),
+    ],
+    "phys.rc_discharge": [
+        _TARGET,
+        CheckPlan("plausibility", "phys.check_plausibility", _plausibility, 0,
+                  required=True, must_pass=True),
+        CheckPlan("symbolic_vs_numeric", "phys.check_rc_discharge",
+                  _formula_args("v0", "resistance", "capacitance", "t"), 2,
+                  required=True, must_pass=True),
+    ],
+    "calc.area_between": [
+        CheckPlan("quadrature", "calc.check_area_between", _area, 1,
+                  required=True, must_pass=True),
+    ],
     "chem.parse": [CheckPlan("reread", "chem.check_parse", _chem_molecule, 1,
                              required=True, must_pass=True)],
     "chem.descriptors": [CheckPlan("recomputed", "chem.check_descriptors", _chem_descriptors, 1,

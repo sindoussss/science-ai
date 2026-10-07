@@ -7,7 +7,9 @@
     python scripts/live_check.py --model qwen2.5:7b-instruct-q4_K_M --suite chem
 
 Runs on a fresh, temporary knowledge store (your ~/.sciai store is never touched), so the last
-problem, a repeat of the first, measures knowledge reuse from this run only. Prints a table and
+problem, a repeat of the first, measures knowledge reuse from this run only. That is the default;
+--no-fresh-store runs against the configured store instead, which is how you reproduce a reuse
+answered from an earlier run. Prints a table and
 saves it to results/<model>.md, or results/<model>-physics.md for the physics suite (characters
 a Windows file name can't hold become "-"). The physics suite accepts every default assumption
 automatically, as nobody is there to tick the checklist, and lists them in the report. The data
@@ -20,6 +22,8 @@ ladder (furthest failure-ladder stage any step reached), seconds, model calls.
 from __future__ import annotations
 
 import argparse
+import contextlib
+import json
 import math
 import re
 import sys
@@ -53,39 +57,51 @@ class Problem:
     rel_tol: float = 1e-6  # data answers are checked against references given to 4-5 digits
     hypothesis: bool = False  # chemistry: the right answer is a hypothesis, never verified
     declined: str | None = None  # the wording rule the decline must use ("route", "generic", ...)
+    # The planning cost this problem should have. A recipe answers in one model call (the
+    # router), and every step after it is built by code, so anything more means the router did
+    # not settle the question. Re-asks after invalid JSON are counted separately, in "JSON
+    # retries", and are not charged here: they measure the model's formatting, not its planning.
+    max_calls: int | None = None
 
 
 PROBLEMS = [
     Problem("integral", "Compute the definite integral of x^2*exp(-x) from x = 0 to x = 1.",
-            (2 - 5 / math.e,), "2 - 5/e ≈ 0.160603"),
-    Problem("equation", "Solve x^2 - 5*x + 6 = 0 for x.", (2.0, 3.0), "x = 2, 3"),
-    Problem("units", "Convert 60 miles per hour to meters per second.", (26.8224,), "26.8224 m/s"),
+            (2 - 5 / math.e,), "2 - 5/e ≈ 0.160603", max_calls=1,
+            note="definite_integral: the integrand is an expression slot, not a quantity"),
+    Problem("equation", "Solve x^2 - 5*x + 6 = 0 for x.", (2.0, 3.0), "x = 2, 3", max_calls=1,
+            note="solve_equation"),
+    Problem("units", "Convert 60 miles per hour to meters per second.", (26.8224,), "26.8224 m/s",
+            max_calls=1, note="unit_convert"),
     Problem("ode", "Solve the differential equation dy/dx = 6*x^2 - 4*x with y(0) = 1, then give y(2).",
-            (9.0,), "y(2) = 9",
-            note="solvable with ode.dsolve or by integrating both sides"),
+            (9.0,), "y(2) = 9", max_calls=1,
+            note="ode_ivp: two tool calls (solve, then evaluate) from the one routing call"),
     Problem("hard", "Find the area of the region enclosed between the curves y = x^3 - 3*x and y = x.",
-            (8.0,), "8", note="multi-step (intersections, then |difference| on two intervals); expected to fail"),
+            (8.0,), "8", max_calls=1,
+            note="area_between_curves: the crossings, |f-g| on each interval, and the area > 0 guard"),
     Problem("repeat", "Compute the definite integral of x^2*exp(-x) from x = 0 to x = 1.",
-            (2 - 5 / math.e,), "reused, 0 model calls", reuse_of="integral"),
+            (2 - 5 / math.e,), "reused, 0 model calls", reuse_of="integral", max_calls=0),
 ]
 
 
 PHYSICS_PROBLEMS = [
     Problem("projectile", "A ball is thrown at 20 m/s at 30 degrees above level ground. How far away does it "
             "land? Use g = 9.80665 m/s^2.", (400 * math.sin(math.radians(60)) / 9.80665,), "35.324 m",
-            note="degrees must become radians before the sine"),
-    Problem("temperature", "Convert 25 degC to kelvin.", (298.15,), "298.15 K",
-            note="an absolute temperature, not a difference"),
+            max_calls=1, note="projectile_range: the recipe holds the formula and the radians"),
+    Problem("temperature", "Convert 25 degC to kelvin.", (298.15,), "298.15 K", max_calls=1,
+            note="unit_convert: an absolute temperature, not a difference"),
     Problem("photon", "What is the energy of a photon with a wavelength of 500 nm?",
-            (6.62607015e-34 * 299792458 / 500e-9,), "3.9729e-19 J", note="constants from CODATA"),
+            (6.62607015e-34 * 299792458 / 500e-9,), "3.9729e-19 J", max_calls=1,
+            note="photon_energy: constants from CODATA, checked against pint's own table"),
     Problem("rc", "A 1 uF capacitor charged to 5 V discharges through a 1 kohm resistor. What is its voltage "
-            "after 2 ms?", (5 * math.exp(-2),), "0.67668 V"),
+            "after 2 ms?", (5 * math.exp(-2),), "0.67668 V", max_calls=1,
+            note="rc_discharge: checked by solving dV/dt = -V/RC numerically"),
     Problem("circuit", "A 12 V source drives a 100 ohm resistor in series with two 200 ohm resistors in "
-            "parallel. What current flows from the source?", (0.06,), "0.06 A",
-            note="the source current's sign is a convention, so only its magnitude counts", signed=False),
+            "parallel. What current flows from the source?", (0.06,), "0.06 A", max_calls=1,
+            note="series_parallel_current: the netlist is built from the slots; the source "
+                 "current's sign is a convention, so only its magnitude counts", signed=False),
     Problem("repeat", "A ball is thrown at 20 m/s at 30 degrees above level ground. How far away does it "
             "land? Use g = 9.80665 m/s^2.", (400 * math.sin(math.radians(60)) / 9.80665,),
-            "reused, 0 model calls", reuse_of="projectile"),
+            "reused, 0 model calls", reuse_of="projectile", max_calls=0),
 ]
 DATA_DIR = ROOT / "tests" / "fixtures" / "data"
 DATA_FILES = ("trial.csv", "plantgrowth.tsv", "sleep.xlsx")
@@ -125,28 +141,30 @@ CHEM_LIBRARY = (f'{{"members":[{{"name":"caffeine","structure":"{CAFFEINE}"}},'
 
 CHEM_PROBLEMS = [
     Problem("identity", f"What is the formula of the structure {ASPIRIN}, and how many atoms "
-            "does it have?", (13.0,), "C9H8O4, 13 atoms", hypothesis=True,
-            note="chem.parse; the answer is a hypothesis, as every chemistry node is"),
+            "does it have?", (13.0,), "C9H8O4, 13 atoms", hypothesis=True, max_calls=1,
+            note="chem_identity; the answer is a hypothesis, as every chemistry node is"),
     Problem("descriptors", f"What are the molecular weight and TPSA of caffeine, {CAFFEINE}?",
             (194.194, 61.82), "MW 194.194 g/mol, TPSA 61.82 A^2", rel_tol=1e-4, hypothesis=True,
-            note="chem.descriptors; both values are recomputed from a pinned element table"),
+            max_calls=1,
+            note="chem_descriptors; both values are recomputed from a pinned element table"),
     Problem("logp", f"What is the logP of ibuprofen, {IBUPROFEN}?", (3.0732,),
-            "logP 3.073 (single-method estimate)", rel_tol=1e-3, hypothesis=True,
-            note="chem.logp; there is no second method, so the check is invariance only"),
+            "logP 3.073 (single-method estimate)", rel_tol=1e-3, hypothesis=True, max_calls=1,
+            note="chem_logp; there is no second method, so the check is invariance only"),
     Problem("druglike", f"Does paracetamol, {PARACETAMOL}, pass the Lipinski and Veber filters?",
-            (151.165,), "both pass", rel_tol=1e-4, hypothesis=True,
-            note="chem.descriptors then chem.druglike; two tool calls"),
+            (151.165,), "both pass", rel_tol=1e-4, hypothesis=True, max_calls=1,
+            note="chem_druglike; descriptors, logP then the filters, all from one router call"),
     Problem("similarity", f"Of caffeine, ibuprofen and paracetamol, which is nearest to aspirin "
             f"({ASPIRIN})? Use this library: {CHEM_LIBRARY}", (0.2222,),
-            "paracetamol, Tanimoto 0.222", rel_tol=1e-3, hypothesis=True,
-            note="chem.similar; the model has to pass the library through as given"),
+            "paracetamol, Tanimoto 0.222", rel_tol=1e-3, hypothesis=True, max_calls=1,
+            note="chem_similarity; the model has to pass the library through as given"),
     Problem("declined", "How do I synthesize aspirin from salicylic acid?", (), "declined",
-            declined="route", note="no tool makes a route, so the request is declined"),
+            declined="route", max_calls=0,
+            note="no tool makes a route, so the request is declined before any model call"),
     Problem("declined_dose", f"How much of {PARACETAMOL} should a patient take?", (), "declined",
-            declined="dosing", note="no tool gives a dose"),
+            declined="dosing", max_calls=0, note="no tool gives a dose; declined in code"),
     Problem("repeat", f"What are the molecular weight and TPSA of caffeine, {CAFFEINE}?",
             (194.194, 61.82), "reused, 0 model calls", reuse_of="descriptors", rel_tol=1e-4,
-            hypothesis=True,
+            hypothesis=True, max_calls=0,
             note="a hypothesis whose checks passed may be reused, still as a hypothesis"),
 ]
 
@@ -156,22 +174,55 @@ SUITE_FILES = {"data": DATA_FILES}
 
 
 class CountingLLM:
-    """Wraps the model to count calls and re-asks after invalid replies (no controller changes)."""
+    """Wraps the model to count calls and re-asks after invalid replies (no controller changes).
+
+    With ``--trace`` it also records every exchange: the system prompt, the user prompt, the
+    JSON schema the request sent as the output format, and the raw reply, one JSON object per
+    line. That is the file to read when a suite fails at formalization, because it is the only
+    place the three things that have to agree -- prompt, schema and reply -- are side by side.
+    """
 
     def __init__(self, inner: Any) -> None:
         self.inner = inner
         self.model_name = getattr(inner, "model_name", "?")
         self.calls = 0
         self.retries = 0
+        self.problem = ""
+        self.trace_path: Path | None = None
+        self.replies: list[str] = []
 
     def reset(self) -> None:
         self.calls = self.retries = 0
+        self.replies = []
+
+    def trace_to(self, path: Path | None, problem: str = "") -> None:
+        """Record this problem's exchanges to ``path`` (one JSON object per call), or stop
+        recording when ``path`` is None."""
+        self.problem = problem
+        self.trace_path = path
+        if path is not None:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("", encoding="utf-8")  # one file per problem, never appended across runs
 
     def chat(self, system: str, user: str, schema: dict[str, Any]) -> Any:
         self.calls += 1
-        if any(m in user for m in RETRY_MARKERS):
+        retry = any(m in user for m in RETRY_MARKERS)
+        if retry:
             self.retries += 1
-        return self.inner.chat(system, user, schema)
+        reply = self.inner.chat(system, user, schema)
+        self.replies.append(getattr(reply, "text", ""))
+        if self.trace_path is not None:
+            record = {
+                "problem": self.problem, "call": self.calls, "retry": retry,
+                "model": self.model_name,
+                "request": {"system": system, "user": user, "schema": schema},
+                "reply": getattr(reply, "text", ""),
+                "prompt_tokens": getattr(reply, "prompt_tokens", None),
+                "completion_tokens": getattr(reply, "completion_tokens", None),
+            }
+            with self.trace_path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+        return reply
 
 
 @dataclass
@@ -187,6 +238,7 @@ class Row:
     why: str = ""
     values: list[float] = field(default_factory=list)
     assumptions: list[str] = field(default_factory=list)
+    replies: list[str] = field(default_factory=list)   # the raw model replies, for a failing row
 
 
 def _numbers(result: Any) -> list[float]:
@@ -257,14 +309,17 @@ def run_problem(rt: Any, llm: CountingLLM, p: Problem) -> Row:
     row.seconds = time.perf_counter() - t0
     row.status, row.calls, row.retries = res.status, res.llm_calls, llm.retries
     row.answer = res.answer
+    row.replies = list(llm.replies)
     row.assumptions = list(res.assumptions)
     row.ladder = _furthest_ladder(rt, sid)
     if p.declined is not None:
         return _score_decline(rt, res, row, p)
     if res.status not in ("answered", "reused") or res.final_node is None:
         asked = res.status == "needs_user" and res.question
-        row.why = f"asked: {res.question}" if asked else (res.detail or res.status)
+        row.why = (f"asked: {res.question}" if asked
+                   else _refusal(rt, res) or res.detail or res.status)
         return row
+    planning = res.llm_calls - row.retries
     final = rt.engine.resolve(res.final_node)
     for nid in (final.tool_inputs or {}).get("answer_nodes", []):
         row.values += _numbers(rt.engine.resolve(nid).result)
@@ -284,9 +339,29 @@ def run_problem(rt: Any, llm: CountingLLM, p: Problem) -> Row:
         row.why = f"expected the stored hypothesis to be reused, got {res.llm_calls} model calls"
     elif p.reuse_of and not p.hypothesis and (res.status != "reused" or res.llm_calls != 0):
         row.why = f"expected reuse with 0 model calls, got {res.status} with {res.llm_calls}"
+    elif p.max_calls is not None and planning > p.max_calls:
+        row.why = (f"right value, but it took {planning} planning call(s) and should take "
+                   f"{p.max_calls}")
     else:
         row.passed = True
     return row
+
+
+def _refusal(rt: Any, res: Any) -> str:
+    """Why the router refused, as the graph recorded it rather than as the user is told.
+
+    The sentence a user reads for an out-of-scope question is deliberately the same one every
+    time, which makes a failing row say nothing. The node behind it names the cause -- the route
+    that could not answer, or the slot the question does not contain and the value the model put
+    in it -- and that is what a failing suite needs to show without reading the trace file.
+    """
+    if res.status != "out_of_scope" or res.final_node is None:
+        return ""
+    try:
+        node = rt.engine.resolve(res.final_node)
+    except Exception:  # noqa: BLE001 - a missing node must not hide the row
+        return ""
+    return " ".join(str(node.content or "").split())
 
 
 def _score_decline(rt: Any, res: Any, row: Row, p: Problem) -> Row:
@@ -305,9 +380,22 @@ def _score_decline(rt: Any, res: Any, row: Row, p: Problem) -> Row:
         row.why = f"declined, but with the {rule!r} wording instead of {p.declined!r}"
     elif computed:
         row.why = f"declined, but {len(computed)} tool result(s) were computed first"
+    elif p.max_calls is not None and row.calls - row.retries > p.max_calls:
+        # the decline runs in code, before the model is asked anything
+        row.why = (f"declined, but it took {row.calls - row.retries} model call(s) and should "
+                   f"take {p.max_calls}")
     else:
         row.passed = True
     return row
+
+
+def explain(row: Row) -> list[str]:
+    """Why a problem failed, and the model's own replies, for the console."""
+    if row.passed:
+        return []
+    out = [f"why: {row.why}"] if row.why else []
+    out += [f"reply {i}: {_cell(reply, 400)}" for i, reply in enumerate(row.replies, 1)]
+    return out
 
 
 def _cell(text: str, limit: int = 60) -> str:
@@ -334,6 +422,25 @@ def report(rows: list[Row], meta: dict[str, str]) -> str:
               f"{sum(r.retries for r in rows)} JSON retries", "", format_table(rows), "", "## Problems", ""]
     lines += [f"{i}. **{r.problem.key}**: {r.problem.question}" + (f" ({r.problem.note})" if r.problem.note else "")
               for i, r in enumerate(rows, 1)]
+    if meta.get("traces"):
+        first = next((i for i, r in enumerate(rows, 1) if not r.passed), None)
+        lines += ["", "## Traces", "",
+                  f"Every request and reply is in {meta['traces']} (one file per problem, one "
+                  "JSON object per model call: the system prompt, the user prompt, the JSON "
+                  "schema the request sent as the output format, and the raw reply)."]
+        if first is not None:
+            lines += ["", f"The first failure is problem {first} "
+                          f"({rows[first - 1].problem.key}): read its trace first."]
+    failed = [(i, r) for i, r in enumerate(rows, 1) if not r.passed and r.replies]
+    if failed:
+        lines += ["", "## What the model replied, for each failing problem", "",
+                  "The reply is the raw text the model returned, in the order it was asked. A "
+                  "router reply names the recipe it chose and the slots it filled, which is "
+                  "what a refusal or a wrong value has to be read against."]
+        for i, r in failed:
+            lines += ["", f"**{i}. {r.problem.key}** -- {r.why or r.status}", "", "```json"]
+            lines += [_cell(reply, 2000) for reply in r.replies]
+            lines += ["```"]
     assumed = [(i, r) for i, r in enumerate(rows, 1) if r.assumptions]
     if assumed:
         lines += ["", "## Assumptions accepted automatically", ""]
@@ -399,6 +506,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--think", action=argparse.BooleanOptionalAction, default=None,
                    help="reasoning mode on/off (default: the config's [model] think)")
     p.add_argument("--out", default=str(ROOT / "results"), help="folder for <model>.md (default: results/)")
+    p.add_argument("--trace", action="store_true",
+                   help="write every request (system prompt, user prompt, JSON schema sent) and "
+                        "the raw reply to <out>/trace-<suite>-<n>.jsonl, one file per problem")
+    p.add_argument("--fresh-store", action=argparse.BooleanOptionalAction, default=True,
+                   help="run on a new, empty temporary store, discarded afterwards (the default); "
+                        "--no-fresh-store uses the store in your config")
     p.add_argument("--suite", choices=sorted(SUITES), default="math",
                    help="math (Phase 1 problems, the default), physics (units, constants, ODEs, circuits), "
                         "data (tests and regression on CSV, TSV and Excel files) or chem (identity, "
@@ -428,10 +541,19 @@ def main(argv: list[str] | None = None) -> int:
     meta = {"model": cfg.model.name, "suite": args.suite, "think": str(cfg.model.think).lower(), "ollama": version,
             "num_ctx": str(cfg.model.num_ctx), "num_predict": str(cfg.model.num_predict),
             "date": datetime.now().strftime("%Y-%m-%d %H:%M")}
+    if args.trace:
+        meta["traces"] = f"{Path(args.out).name}/trace-{args.suite}-<n>.jsonl"
     rows: list[Row] = []
-    with tempfile.TemporaryDirectory(prefix="sciai-live-") as tmp:
-        cfg.data.data_dir = str(Path(tmp) / "datasets")  # the imported copies go with the temporary store
-        rt = build_runtime(cfg, db_path=Path(tmp) / "live.db")
+    with contextlib.ExitStack() as stack:
+        if args.fresh_store:
+            tmp = Path(stack.enter_context(tempfile.TemporaryDirectory(prefix="sciai-live-")))
+            cfg.data.data_dir = str(tmp / "datasets")  # the imported copies go with the temporary store
+            db_path = tmp / "live.db"
+            meta["store"] = "fresh temporary store"
+        else:
+            db_path = cfg.db_path
+            meta["store"] = str(db_path)
+        rt = build_runtime(cfg, db_path=db_path)
         llm = CountingLLM(rt.llm)
         rt.controller.llm = llm
         try:
@@ -443,10 +565,16 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"identity fixture: {meta['identity fixture']}", flush=True)
             for i, p in enumerate(problems, 1):
                 print(f"[{i}/{len(problems)}] {p.key}: {p.question}", flush=True)
+                if args.trace:
+                    llm.trace_to(Path(args.out) / f"trace-{args.suite}-{i}.jsonl", p.key)
                 row = run_problem(rt, llm, p)
                 rows.append(row)
                 print(f"      {'PASS' if row.passed else 'FAIL'} ({row.status}, {row.seconds:.1f} s, "
                       f"{row.calls} calls, {row.retries} retries, ladder {row.ladder})", flush=True)
+                # The table truncates its cells, and a console paste is usually all anyone
+                # reads, so a failure says in full here why it failed and what the model said.
+                for line in explain(row):
+                    print(f"      {line}", flush=True)
         except KeyboardInterrupt:
             print("interrupted: saving the problems that finished", file=sys.stderr)
         finally:

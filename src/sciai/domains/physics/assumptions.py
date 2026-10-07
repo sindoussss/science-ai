@@ -26,7 +26,9 @@ DEFAULTS: dict[str, tuple[str, ...]] = {
 PROBLEM_TYPES = tuple(DEFAULTS)
 # Pure mathematics has no modelling assumptions to offer; a data question's assumptions come from
 # each test's own diagnostics (normality, equal variances...), attached to that test's node.
-NO_CHECKLIST = ("math", "data")
+# Chemistry has none either: a chem node's assumptions are the checks its own tool runs, and
+# every one of them is required, so there is nothing for a user to tick.
+NO_CHECKLIST = ("math", "data", "chem")
 MAX_MODEL_ASSUMPTIONS = 8
 MAX_ASSUMPTION_CHARS = 120
 

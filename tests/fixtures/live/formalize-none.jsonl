@@ -1,0 +1,1 @@
+{"problem": "none", "call": 1, "retry": false, "model": "qwen3:8b", "question": "Write me a limerick about thermodynamics.", "expected": [], "request": {"role": "formalizer"}, "reply": "{\"action\":\"formalize\",\"recipe\":\"none\",\"slots\":{}}"}

@@ -21,7 +21,7 @@ CAFFEINE = "Cn1cnc2c1c(=O)n(C)c(=O)n2C"
 IBUPROFEN = "CC(C)Cc1ccc(cc1)C(C)C(=O)O"
 
 QUESTION = f"What are the molecular properties of {ASPIRIN}?"
-FORMAL = {"action": "formalize", "operation": "descriptors",
+FORMAL = {"action": "formalize", "recipe": "molecule_question", "slots": {}, "operation": "descriptors",
           "statement": f"Compute the standard descriptors of the structure {ASPIRIN}."}
 
 
@@ -99,13 +99,12 @@ def test_a_corrupted_molecular_weight_is_caught_by_the_recomputation(make_rt, ru
 
 # 3 ------------------------------------------------------- declined by capability
 @pytest.mark.parametrize("operation,asked,rule", [
-    ("synthesis", "How do I synthesize aspirin from salicylic acid?", "route"),
     ("procedure", "Give me the reflux conditions and workup for this ester.", "procedure"),
-    ("dose", "How much of this should a patient take?", "dosing"),
     ("toxicity", "Which of these is the most toxic?", "generic"),
 ])
 def test_a_request_no_tool_serves_is_declined_once(make_rt, operation, asked, rule):
-    rt = make_rt(ScriptedLLM([{"action": "formalize", "statement": asked, "operation": operation}]))
+    rt = make_rt(ScriptedLLM([{"action": "formalize", "recipe": "molecule_question", "slots": {}, "statement": asked,
+                                 "operation": operation}]))
     rt.engine.new_session("declined")
     res = rt.controller.run(asked)
 
@@ -120,11 +119,54 @@ def test_a_request_no_tool_serves_is_declined_once(make_rt, operation, asked, ru
     assert not nodes(rt, type_=NodeType.TOOL_RESULT)  # nothing was computed
 
 
+@pytest.mark.parametrize("asked,operation,rule", [
+    ("How do I synthesize aspirin from salicylic acid?", "synthesis_route", "route"),
+    (f"How much of {ASPIRIN} should a patient take?", "dosing", "dosing"),
+    ("Give me a retrosynthesis for paracetamol.", "synthesis_route", "route"),
+    ("What dose of this compound is safe?", "dosing", "dosing"),
+])
+def test_a_request_nothing_serves_is_declined_before_any_model_call(make_rt, asked, operation, rule):
+    """A question plainly asking for a route or a dose is declined in code, with no model call.
+
+    The live runs showed why this matters: when formalization failed, these two questions came
+    back as an error instead of a refusal. A decline must not depend on the model answering at
+    all, so the model is given nothing to say -- the scripted script is empty, and a single call
+    would raise.
+    """
+    rt = make_rt(ScriptedLLM([]))
+    rt.engine.new_session("pre-declined")
+    res = rt.controller.run(asked)
+
+    assert res.status == "declined"
+    assert res.llm_calls == 0
+    assert res.detail == decline.wording_for(asked)[1]
+    node = rt.engine.resolve(res.final_node)
+    assert node.type == NodeType.HINT and node.title == "Declined"
+    assert (node.tool_inputs["operation"], node.tool_inputs["wording"]) == (operation, rule)
+    assert not nodes(rt, type_=NodeType.TOOL_RESULT)
+
+
+@pytest.mark.parametrize("asked", [
+    f"What is the logP of the product of this synthesis, {ASPIRIN}?",
+    f"The synthesis paper reports {ASPIRIN}; what is its molecular weight?",
+    "Which of these has the lowest predicted dose-limiting toxicity?",
+    "Compute the definite integral of x^2*exp(-x) from x = 0 to x = 1.",
+    "How much work is done lifting 10 kg through 2 m?",
+    "How many metres are there in a mile?",
+])
+def test_the_code_decline_never_refuses_a_question_a_tool_can_serve(asked):
+    """The mirror of the test above, and the reason it is capability-first: the pre-model check
+    names an operation only when the question asks for one nothing performs. A flagged word in
+    passing, and a maths or physics question that happens to say "how much", go through."""
+    assert decline.decline_for_question(asked) is None
+
+
 def test_a_served_operation_is_not_declined_for_the_words_around_it(make_rt):
     """Change 2: keywords choose wording, never whether to decline."""
     asked = f"The synthesis paper reports {ASPIRIN}; what is its molecular weight?"
     goal = {"tool": "chem.descriptors", "args": {"structure": ASPIRIN}}
-    rt = make_rt(ScriptedLLM([{"action": "formalize", "statement": asked, "operation": "descriptors",
+    rt = make_rt(ScriptedLLM([{"action": "formalize", "recipe": "molecule_question", "slots": {}, "statement": asked,
+                                 "operation": "descriptors",
                               "goal": goal}, finish("chem.descriptors")]))
     rt.engine.new_session("wording")
     res = rt.controller.run(asked)
@@ -135,7 +177,7 @@ def test_a_served_operation_is_not_declined_for_the_words_around_it(make_rt):
 
 def test_a_goal_naming_a_tool_that_does_not_exist_is_declined_not_retried(make_rt):
     asked = "Plan a route to this molecule."
-    rt = make_rt(ScriptedLLM([{"action": "formalize", "statement": asked,
+    rt = make_rt(ScriptedLLM([{"action": "formalize", "recipe": "molecule_question", "slots": {}, "statement": asked,
                               "goal": {"tool": "chem.synthesize", "args": {"structure": ASPIRIN}}}]))
     rt.engine.new_session("no such tool")
     res = rt.controller.run(asked)
@@ -150,7 +192,8 @@ def test_every_library_member_is_screened_and_the_ranking_is_rechecked(make_rt):
                            {"name": "ibuprofen", "structure": IBUPROFEN}]}
     asked = "Which of these two is nearest to aspirin?"
     goal = {"tool": "chem.similar", "args": {"structure": ASPIRIN, "library": library}}
-    rt = make_rt(ScriptedLLM([{"action": "formalize", "statement": asked, "operation": "similarity",
+    rt = make_rt(ScriptedLLM([{"action": "formalize", "recipe": "molecule_question", "slots": {}, "statement": asked,
+                                 "operation": "similarity",
                               "goal": goal}, finish("chem.similar")]))
     rt.engine.new_session("similar")
     res = rt.controller.run(asked)
@@ -190,10 +233,17 @@ def test_no_route_in_the_system_can_verify_a_chemistry_node(make_rt):
 
 # 6 ---------------------------------------------- a passing check allows reuse
 def test_a_checked_hypothesis_is_reused_and_stays_a_hypothesis(make_rt, tmp_path):
-    """Change 5: reuse is what passing checks buy, and the reused node is still a hypothesis."""
+    """Change 5: reuse is what passing checks buy, and the reused node is still a hypothesis.
+
+    The same question asked twice is answered from the store outright, with no model call: a
+    chemistry answer is never verified, so the verified-only lookup used to re-route and
+    recompute every repeat. What comes back is the stored answer exactly as it was stored,
+    which is to say still a hypothesis, and the result says so rather than claiming a verified
+    store hit.
+    """
     goal = {"tool": "chem.descriptors", "args": {"structure": ASPIRIN}}
     db = tmp_path / "kb.db"
-    rt = make_rt(ScriptedLLM([{**FORMAL, "goal": goal}, {**FORMAL, "goal": goal}]), db_path=db)
+    rt = make_rt(ScriptedLLM([{**FORMAL, "goal": goal}, finish("chem.descriptors")]), db_path=db)
     rt.engine.new_session("first")
     first = rt.controller.run(QUESTION)
     node = nodes(rt, "chem.descriptors")[0]
@@ -201,8 +251,32 @@ def test_a_checked_hypothesis_is_reused_and_stays_a_hypothesis(make_rt, tmp_path
 
     rt.engine.new_session("again")
     again = rt.controller.run(QUESTION)
-    assert again.status == "answered" and not again.verified
+    assert again.status == "reused" and not again.verified
+    assert again.llm_calls == 0                           # nothing was asked of the model
+    assert "hypothesis" in again.detail
     reused = nodes(rt, "chem.descriptors")
     assert len(reused) == 1 and reused[0].id == node.id   # the same node, linked into the session
     assert reused[0].status == Status.HYPOTHESIS
     assert first.answer == again.answer
+    assert "hypothesis" in rt.engine.resolve(again.final_node).flags
+
+
+def test_an_answer_resting_on_a_failed_check_is_not_reused(make_rt, tmp_path):
+    """What passing checks buy is reuse, so a check that fails has to withdraw it: the answer
+    is recomputed for the next asker rather than handed back from the store."""
+    from dataclasses import replace
+
+    from sciai.controller import lookup
+    from sciai.graph.model import new_id
+
+    goal = {"tool": "chem.descriptors", "args": {"structure": ASPIRIN}}
+    rt = make_rt(ScriptedLLM([{**FORMAL, "goal": goal}, finish("chem.descriptors")]),
+                 db_path=tmp_path / "kb.db")
+    rt.engine.new_session("first")
+    rt.controller.run(QUESTION)
+    assert lookup.answer_for_question(rt.repo, QUESTION) is not None
+
+    node = nodes(rt, "chem.descriptors")[0]
+    passed = rt.repo.evidence_for(node.id)[0]
+    rt.repo.add_evidence(replace(passed, id=new_id(), outcome="fail"))
+    assert lookup.answer_for_question(rt.repo, QUESTION) is None

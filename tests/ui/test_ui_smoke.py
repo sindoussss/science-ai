@@ -9,13 +9,13 @@ from sciai.graph.model import NodeType, Status  # noqa: E402
 from sciai.ui.controller_thread import RootConfirmer  # noqa: E402
 from sciai.ui.main_window import MainWindow  # noqa: E402
 from sciai.ui.theme.theme import STATUSES, Theme, load_bundled_fonts  # noqa: E402
-from tests.acceptance.test_phase1 import DIFF, FORMAL, QUESTION, finish_both, subs_step  # noqa: E402
+from tests.acceptance.test_phase1 import QUESTION, ROUTE  # noqa: E402
 from tests.fakes.fake_llm import ScriptedLLM  # noqa: E402
 
 
 @pytest.fixture
 def window(qtbot, make_rt, tmp_path):
-    rt = make_rt(ScriptedLLM([FORMAL, DIFF, subs_step, finish_both]))
+    rt = make_rt(ScriptedLLM([ROUTE]))
     theme = Theme.load("light")
     from PyQt6.QtWidgets import QApplication
     app = QApplication.instance()
@@ -45,18 +45,19 @@ def test_task_fills_graph_and_node_panel(window, qtbot, tmp_path):
     qtbot.waitUntil(lambda: not window.executor.is_busy, timeout=30000)
     finals = [n for n in window.graph.nodes.values() if n.type == NodeType.FINAL]
     assert finals[0].status == Status.VERIFIED
-    assert "-pi**2" in window.chat.transcript_text()
+    assert "0.01239" in window.chat.transcript_text()
     assert window.node_panel.node is not None
     assert window.node_panel.tab_labels() == ["Code", "Execution Log", "Messages", "Environment", "Review"]
     window.grab().save(str(tmp_path / "window.png"))
 
-    # Pin a note on the derivative node: triggers a deterministic re-check (no model call).
-    diff = next(n for n in window.graph.nodes.values() if n.tool_name == "sympy.diff")
-    window.graph.pin_editor.open_for(diff.id, "n2", 1, 0.5, 0.5)
-    window.graph.pin_editor.text.setPlainText("recheck this derivative")
+    # Pin a note on the solution node: triggers a deterministic re-check (no model call).
+    diff = next(n for n in window.graph.nodes.values() if n.tool_name == "ode.dsolve")
+    handle = window.graph.handles[diff.id]
+    window.graph.pin_editor.open_for(diff.id, handle, 1, 0.5, 0.5)
+    window.graph.pin_editor.text.setPlainText("recheck this solution")
     window.graph.pin_editor._send()
     qtbot.waitUntil(lambda: "Re-check of" in window.chat.transcript_text(), timeout=30000)
-    assert "Note 1 on n2: recheck this derivative" in window.chat.transcript_text()  # a system line
+    assert f"Note 1 on {handle}: recheck this solution" in window.chat.transcript_text()
     assert window.graph.items_[diff.id].pins == [(1, 0.5, 0.5)]
     msgs = window.rt.repo.messages(window.session_id, diff.id)
     assert msgs[-1]["pin_number"] == 1
@@ -67,7 +68,7 @@ def test_locked_node_cannot_be_deleted(window, qtbot):
     window.chat._submit()
     qtbot.waitUntil(lambda: any(n.type == NodeType.FINAL for n in window.graph.nodes.values()), timeout=30000)
     qtbot.waitUntil(lambda: not window.executor.is_busy, timeout=30000)
-    diff = next(n for n in window.graph.nodes.values() if n.tool_name == "sympy.diff")
+    diff = next(n for n in window.graph.nodes.values() if n.tool_name == "ode.dsolve")
     window.node_panel.lock_toggled.emit(diff.id, True)
     qtbot.waitUntil(lambda: window.rt.repo.get_node(diff.id).locked, timeout=10000)
     from sciai.graph.engine import GraphRuleError

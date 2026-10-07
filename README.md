@@ -168,6 +168,7 @@ The UI tests open real (hidden) windows. On a machine without a display, set
 ```powershell
 python scripts\live_check.py --model qwen2.5:7b-instruct-q4_K_M
 python scripts\live_check.py --model qwen3:8b --think
+python scripts\live_check.py --model qwen3:8b --no-think --trace
 python scripts\live_check.py --model qwen2.5:7b-instruct-q4_K_M --suite physics
 python scripts\live_check.py --model qwen2.5:7b-instruct-q4_K_M --suite data
 python scripts\live_check.py --model qwen2.5:7b-instruct-q4_K_M --suite chem
@@ -175,7 +176,9 @@ python scripts\live_check.py --model qwen2.5:7b-instruct-q4_K_M --suite chem
 
 It runs six fixed problems (a definite integral, an equation, a unit conversion, an ODE, one hard
 multi-step problem that small models usually fail, and a repeat of the first to test knowledge
-reuse) on a fresh temporary store, so your own knowledge store is not touched. It prints a table
+reuse) on a fresh temporary store, so your own knowledge store is not touched and a suite cannot
+inherit or leave behind a stored answer. `--no-fresh-store` uses the store in your config instead,
+which is how you reproduce an answer reused from an earlier run. It prints a table
 with pass/fail, JSON retries, the failure-ladder stage reached, seconds and model calls, and saves
 it to `results\<model>.md` (a `:` or `/` in the tag becomes `-`, since Windows file names can't
 hold them). If Ollama isn't running or the model isn't pulled, it says so and exits with code 2.
@@ -190,13 +193,24 @@ R's sleep as an Excel sheet) and asks five questions about them (a Welch t-test,
 regression slope, a t-test on the Excel sheet, group means) plus a repeat of the first. Answers are
 checked against R's reference values to 4 significant digits. It saves `results\<model>-data.md`.
 
+`--trace` writes every exchange to `results\trace-<suite>-<n>.jsonl`, one file per problem and
+one JSON object per model call: the system prompt, the user prompt, the JSON schema the request
+sent as the output format, and the raw reply. Read it when a suite fails at formalization, since
+that is the only place the prompt, the schema and the reply sit side by side.
+
+A failing row carries its cause without the trace file. An out-of-scope row shows what the graph
+recorded -- the route that could not answer the question, or the slot the question does not
+contain and the value the model put in it -- rather than the sentence every out-of-scope question
+gets, and the saved report quotes the raw replies for every failing problem underneath the table.
+
 `--suite chem` first standardizes five spellings of aspirin with no model call, and reports whether
 they collapse to one InChIKey (if they do not, nothing else the suite says about chemistry means
 anything). It then asks eight questions: identity, descriptors against reference values, a logP, a
 drug-likeness verdict, a similarity ranking over a three-member library, two requests nothing can
-serve (a synthesis route and a dose, which must be declined with no tool run at all) and a repeat
-to test reuse. A chemistry answer passes only if it comes back a hypothesis; an answer that comes
-back verified is a failure. It saves `results\<model>-chem.md`.
+serve (a synthesis route and a dose, which must be declined with no model call at all) and a repeat
+to test reuse. The five chemistry questions are recipes, so each costs the one routing call. A
+chemistry answer passes only if it comes back a hypothesis; an answer that comes back verified is a
+failure. It saves `results\<model>-chem.md`.
 
 ## Linux / macOS
 
@@ -210,15 +224,54 @@ pytest
 
 ## How a question flows
 
-1. Knowledge-store lookup (no model call). A verified answer to the same question is reused.
-2. One model call formalizes the question into the root node, which you confirm or edit. For a
-   physics problem it also names the problem type and the given values with their units. The
-   type's default assumptions (no air resistance, ideal wires...) are offered as a checklist; each
-   ticked one becomes an assumption node, and rejecting it later invalidates everything built on it.
-3. If the formal goal is a single tool call that is already verified, it is reused; otherwise it runs.
-4. Otherwise the controller loop: one JSON action per model call, validated, executed in the tool sandbox.
-5. Hard-coded risk rules (stakes, surprise, confidence, step type, units) decide when a node needs an
-   independent check. A failed check walks the ladder: retry with a different method, backtrack,
-   then escalate with both results side by side.
-6. The final answer is a template whose values are filled from node results, so the model never
-   writes a number.
+1. Knowledge-store lookup (no model call). A stored answer to the same question is reused: a
+   verified one, or -- since a chemistry answer is never verified -- a chemistry hypothesis
+   whose results all passed their checks, which comes back still a hypothesis and says so.
+2. A question asking for something no tool performs (a synthesis route, a dose) is declined
+   here, in code, before any model call.
+3. One model call routes the question to a recipe and fills that recipe's slots. The recipe list
+   is a closed enum, so this is the whole of the model's planning; a question no recipe covers
+   comes back as out of scope with the list of what there is, and one that fits a recipe but
+   lacks a value the recipe needs is asked back to you rather than guessed at. The root node
+   holds the slots, and you confirm or edit it. The recipe also names the problem type, so the type's default
+   assumptions (no air resistance, ideal wires...) are offered as a checklist; each ticked one
+   becomes an assumption node, and rejecting it later invalidates everything built on it.
+4. Code then runs the recipe's tool calls, building each from the slots and the results before
+   it, so an easy question costs exactly that one model call. A call whose result is already
+   verified in the store is reused instead of run.
+5. Hard-coded risk rules (stakes, surprise, confidence, step type, units) decide when a node needs
+   an independent check; a recipe's own tools are always checked, including that the answer is in
+   the unit the question asked for. A failed check walks the ladder: retry with a different method
+   or by the specialist role for that tool, backtrack, then escalate with both results side by side.
+6. A dataset or molecule question goes to the step-by-step controller loop instead: one JSON action
+   per model call, validated, executed in the tool sandbox.
+7. The final answer is a template whose values are filled from node results, so the model never
+   writes a number. For a recipe the sentence is written by code, and it never names the unit,
+   because the value renders with it.
+
+### The recipes
+
+`unit_convert` (including degC and degF), `definite_integral`, `solve_equation`,
+`area_between_curves`, `ode_ivp`, `projectile_range`, `photon_energy`, `rc_discharge`,
+`series_parallel_current`, `chem_identity`, `chem_descriptors`, `chem_logp`, `chem_druglike`,
+`chem_similarity`. Each one has named slots -- numbers, units, expressions, variables, structures
+-- and `src/sciai/controller/recipes.py` holds them, their two worked examples apiece, and the tool
+calls each one makes. A number slot takes only the number; its unit lives in the matching
+`*_unit` slot, and an expression slot takes an expression, which is what the old quantity-only
+`givens` could not hold. A chemistry recipe answers with a hypothesis, never a verified node.
+
+Every value the model writes into a slot has to come from the question. A number slot is sourced
+only if each of its numbers appears in the question (digits or words, so "x squared" sources the 2
+in `x**2`). A structure is not copied by the model at all when the
+question carries exactly one: code reads it out of the question and fills the slot with it, and
+the root node says so. The question may write that structure as a SMILES, an InChI or a
+molblock, all three of which the tools read; the slot ends up holding its SMILES either
+way. When the question carries several -- a similarity query and its library --
+the model still says which one is the subject, and that choice is sourced if the question contains
+a structure that is the same molecule, compared by standard InChIKey, so a rewriting of the
+question's own SMILES is accepted and a molecule the question never mentioned is not, including
+`C`. Units and variable names carry no data and are exempt. A question that names a molecule and draws no structure at all -- "the logP of caffeine?" -- is not refused: the system asks you for the structure, because the recipe is known and only the value is missing. A slot that fails gets one re-prompt naming it, and then the question
+is answered out of scope -- nothing is computed from it, nothing is stored, and nothing stored that
+way is ever reused. This is why a question about a molecule cannot be answered by the photon-energy
+example's number. A question that mentions a molecule, a chemistry term or a SMILES structure is
+also barred in code from reaching a physics or maths recipe at all.

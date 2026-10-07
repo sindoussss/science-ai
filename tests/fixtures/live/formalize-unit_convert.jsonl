@@ -1,0 +1,1 @@
+{"problem": "unit_convert", "call": 1, "retry": false, "model": "qwen3:8b", "question": "Convert 60 miles per hour to meters per second.", "expected": [26.8224], "request": {"role": "formalizer"}, "reply": "{\"action\":\"formalize\",\"recipe\":\"unit_convert\",\"slots\":{\"value\":60,\"from_unit\":\"mile/hour\",\"to_unit\":\"m/s\"}}"}

@@ -1,0 +1,1 @@
+{"problem": "area_between_curves", "call": 1, "retry": false, "model": "qwen3:8b", "question": "Find the area of the region enclosed between the curves y = x^3 - 3*x and y = x.", "expected": [8.0], "request": {"role": "formalizer"}, "reply": "{\"action\":\"formalize\",\"recipe\":\"area_between_curves\",\"slots\":{\"curve1\":\"x**3 - 3*x\",\"curve2\":\"x\",\"var\":\"x\"}}"}

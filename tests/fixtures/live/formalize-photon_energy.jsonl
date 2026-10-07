@@ -1,0 +1,1 @@
+{"problem": "photon_energy", "call": 1, "retry": false, "model": "qwen3:8b", "question": "What is the energy of a photon with a wavelength of 500 nm?", "expected": [3.972891714297857e-19], "request": {"role": "formalizer"}, "reply": "{\"action\":\"formalize\",\"recipe\":\"photon_energy\",\"slots\":{\"wavelength\":\"500\",\"wavelength_unit\":\"nm\",\"to_unit\":\"J\"}}"}

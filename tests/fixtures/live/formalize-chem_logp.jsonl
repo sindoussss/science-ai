@@ -1,0 +1,1 @@
+{"problem": "chem_logp", "call": 1, "retry": false, "model": "qwen3:8b", "question": "What is the logP of ibuprofen, CC(C)Cc1ccc(cc1)C(C)C(=O)O?", "expected": [3.0732], "hypothesis": true, "rel_tol": 0.001, "request": {"role": "formalizer"}, "reply": "{\"action\":\"formalize\",\"recipe\":\"chem_logp\",\"slots\":{\"structure\":\"CC(C)Cc1ccc(cc1)C(C)C(=O)O\"}}"}

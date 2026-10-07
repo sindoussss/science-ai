@@ -1,0 +1,1 @@
+{"problem": "unit_convert_offset", "call": 1, "retry": false, "model": "qwen3:8b", "question": "Convert 25 degC to kelvin.", "expected": [298.15], "request": {"role": "formalizer"}, "reply": "{\"action\":\"formalize\",\"recipe\":\"unit_convert\",\"slots\":{\"value\":\"25\",\"from_unit\":\"degC\",\"to_unit\":\"K\",\"kind\":\"absolute_temperature\"}}"}
