@@ -251,6 +251,32 @@ def test_chem_identity_answers_in_one_call_and_stays_a_hypothesis(lc, make_rt):
     assert row.status == "answered"
 
 
+def test_a_failing_row_says_why_and_quotes_the_model(lc, make_rt):
+    """Two chem runs in a row came back 6/8 with a row that said only "I can only answer
+    questions that fit one of the recipes I have", which is the sentence every out-of-scope
+    question gets. The cause -- the route, or the slot and the value the model put in it -- is
+    in the graph, and the raw reply is what it has to be read against, so the table and the
+    saved report now carry both and a failure no longer needs the trace file."""
+    reply = {"action": "formalize", "recipe": "chem_descriptors",
+             "slots": {"structure": "CC(=O)Oc1ccccc1C(=O)O"}}       # aspirin, not the caffeine asked about
+    llm = lc.CountingLLM(ScriptedLLM([reply, reply]))
+    problem = [p for p in lc.CHEM_PROBLEMS if p.key == "descriptors"][0]
+    row = lc.run_problem(make_rt(llm), llm, problem)
+
+    assert not row.passed and row.status == "out_of_scope"
+    assert "chem_descriptors" in row.why and "structure = CC(=O)Oc1ccccc1C(=O)O" in row.why
+    assert row.replies and all("chem_descriptors" in r for r in row.replies)
+    text = lc.report([row], {"model": "m", "suite": "chem"})
+    assert "## What the model replied, for each failing problem" in text
+    assert "structure = CC(=O)Oc1ccccc1C(=O)O" in text
+
+    wrong_route = {"action": "formalize", "recipe": "photon_energy",
+                   "slots": {"wavelength": "500", "wavelength_unit": "nm", "to_unit": "J"}}
+    llm = lc.CountingLLM(ScriptedLLM([wrong_route, wrong_route]))
+    row = lc.run_problem(make_rt(llm), llm, problem)
+    assert "photon_energy" in row.why, row.why
+
+
 def test_data_suite(lc, make_rt, cfg, tmp_path):
     assert [p.key for p in lc.DATA_PROBLEMS] == ["welch", "anova", "regression", "excel", "means", "repeat"]
     assert lc.parse_args(["--model", "m", "--suite", "data"]).suite == "data"

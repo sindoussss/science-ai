@@ -218,10 +218,27 @@ def _numbers(slot: Slot, raw: Any) -> list[float]:
     return [_number(slot, item) for item in items]
 
 
+# A structure copied out of a sentence carries the sentence with it: the question writes
+# "...caffeine, Cn1cnc2c1c(=O)n(C)c(=O)n2C?" and "...aspirin (CC(=O)Oc1ccccc1C(=O)O)?". None of
+# this punctuation can appear at either end of a SMILES, and the charset guard below has to
+# stay wide enough for InChI, which does use "?" and ",". So it is trimmed here instead.
+_SENTENCE_TAIL = "?!.,;:"
+
+
+def _trim_structure(text: str) -> str:
+    out = text.strip().strip("\"'").strip()
+    if out.upper().startswith("INCHI="):   # an InChI layer may legitimately end in "?"
+        return out
+    out = out.rstrip(_SENTENCE_TAIL).strip()
+    while out.startswith("(") and out.endswith(")"):   # written in brackets in prose
+        out = out[1:-1].strip().rstrip(_SENTENCE_TAIL).strip()
+    return out
+
+
 def _smiles(slot: Slot, raw: Any) -> str:
-    """A structure, exactly as the question wrote it. Chemistry is the tool's job: this only
-    refuses something that cannot be a structure at all."""
-    text = str(raw).strip()
+    """A structure, as the question wrote it, less the punctuation around it. Chemistry is the
+    tool's job: this only refuses something that cannot be a structure at all."""
+    text = _trim_structure(str(raw))
     if not text:
         raise SlotError(f"{slot.name} is empty; it holds {slot.about}")
     if len(text) > MAX_STRUCTURE:

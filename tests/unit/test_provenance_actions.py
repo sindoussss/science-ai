@@ -129,3 +129,27 @@ def test_reading_structures_out_of_a_question_is_quiet_and_exact():
     assert standardize.in_text(ASPIRIN, f"How many atoms has aspirin ({ASPIRIN})?")
     assert standardize.inchikey_of("molecular") is None
     assert standardize.inchikey_of("not a structure at all") is None
+
+
+@pytest.mark.parametrize("written", [
+    f"{CAFFEINE}?",            # the question ends in a question mark, right against the SMILES
+    f"{CAFFEINE}.",
+    f'"{CAFFEINE}"',
+    f"  {CAFFEINE}  ",
+    f"({CAFFEINE})",           # a question writes a structure in brackets, in prose
+    f"({CAFFEINE})?",
+    f"{CAFFEINE_KEKULE}?",
+])
+def test_a_structure_copied_with_the_sentence_around_it_is_still_the_question(written):
+    """A model copying a structure out of prose copies what is next to it. None of this
+    punctuation can begin or end a SMILES, and the charset guard has to stay wide enough for
+    InChI (which does use "?" and ","), so it is trimmed from the slot instead."""
+    assert plan_of("chem_descriptors", CAFFEINE_QUESTION, structure=written).unsourced == ()
+
+
+def test_an_inchi_keeps_its_own_punctuation():
+    """An InChI layer may legitimately end in "?" for undefined stereo, so nothing is trimmed."""
+    from sciai.controller.recipes import _trim_structure
+
+    inchi = "InChI=1S/C10H14N2/c1-12-7-3-5-10(12)9-4-2-6-11-8-9/h2,4,6,8,10H,3,5,7H2,1H3/t10?"
+    assert _trim_structure(inchi) == inchi

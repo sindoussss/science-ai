@@ -104,7 +104,7 @@ class UnsourcedSlots(Unroutable):
             f"{names} is not in the question ({shown}). Copy only numbers and structures the "
             f"question itself contains, never a value from an example; if {recipe} does not fit "
             f'this question, reply with recipe "none" or the recipe that does',
-            f"the {recipe} recipe was filled with {names}, which the question does not contain")
+            f"the {recipe} recipe was filled with {shown}, which the question does not contain")
         self.recipe, self.slots = recipe, slots
 
 

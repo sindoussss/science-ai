@@ -189,9 +189,11 @@ class CountingLLM:
         self.retries = 0
         self.problem = ""
         self.trace_path: Path | None = None
+        self.replies: list[str] = []
 
     def reset(self) -> None:
         self.calls = self.retries = 0
+        self.replies = []
 
     def trace_to(self, path: Path | None, problem: str = "") -> None:
         """Record this problem's exchanges to ``path`` (one JSON object per call), or stop
@@ -208,6 +210,7 @@ class CountingLLM:
         if retry:
             self.retries += 1
         reply = self.inner.chat(system, user, schema)
+        self.replies.append(getattr(reply, "text", ""))
         if self.trace_path is not None:
             record = {
                 "problem": self.problem, "call": self.calls, "retry": retry,
@@ -235,6 +238,7 @@ class Row:
     why: str = ""
     values: list[float] = field(default_factory=list)
     assumptions: list[str] = field(default_factory=list)
+    replies: list[str] = field(default_factory=list)   # the raw model replies, for a failing row
 
 
 def _numbers(result: Any) -> list[float]:
@@ -305,13 +309,15 @@ def run_problem(rt: Any, llm: CountingLLM, p: Problem) -> Row:
     row.seconds = time.perf_counter() - t0
     row.status, row.calls, row.retries = res.status, res.llm_calls, llm.retries
     row.answer = res.answer
+    row.replies = list(llm.replies)
     row.assumptions = list(res.assumptions)
     row.ladder = _furthest_ladder(rt, sid)
     if p.declined is not None:
         return _score_decline(rt, res, row, p)
     if res.status not in ("answered", "reused") or res.final_node is None:
         asked = res.status == "needs_user" and res.question
-        row.why = f"asked: {res.question}" if asked else (res.detail or res.status)
+        row.why = (f"asked: {res.question}" if asked
+                   else _refusal(rt, res) or res.detail or res.status)
         return row
     planning = res.llm_calls - row.retries
     final = rt.engine.resolve(res.final_node)
@@ -339,6 +345,23 @@ def run_problem(rt: Any, llm: CountingLLM, p: Problem) -> Row:
     else:
         row.passed = True
     return row
+
+
+def _refusal(rt: Any, res: Any) -> str:
+    """Why the router refused, as the graph recorded it rather than as the user is told.
+
+    The sentence a user reads for an out-of-scope question is deliberately the same one every
+    time, which makes a failing row say nothing. The node behind it names the cause -- the route
+    that could not answer, or the slot the question does not contain and the value the model put
+    in it -- and that is what a failing suite needs to show without reading the trace file.
+    """
+    if res.status != "out_of_scope" or res.final_node is None:
+        return ""
+    try:
+        node = rt.engine.resolve(res.final_node)
+    except Exception:  # noqa: BLE001 - a missing node must not hide the row
+        return ""
+    return " ".join(str(node.content or "").split())
 
 
 def _score_decline(rt: Any, res: Any, row: Row, p: Problem) -> Row:
@@ -399,6 +422,16 @@ def report(rows: list[Row], meta: dict[str, str]) -> str:
         if first is not None:
             lines += ["", f"The first failure is problem {first} "
                           f"({rows[first - 1].problem.key}): read its trace first."]
+    failed = [(i, r) for i, r in enumerate(rows, 1) if not r.passed and r.replies]
+    if failed:
+        lines += ["", "## What the model replied, for each failing problem", "",
+                  "The reply is the raw text the model returned, in the order it was asked. A "
+                  "router reply names the recipe it chose and the slots it filled, which is "
+                  "what a refusal or a wrong value has to be read against."]
+        for i, r in failed:
+            lines += ["", f"**{i}. {r.problem.key}** -- {r.why or r.status}", "", "```json"]
+            lines += [_cell(reply, 2000) for reply in r.replies]
+            lines += ["```"]
     assumed = [(i, r) for i, r in enumerate(rows, 1) if r.assumptions]
     if assumed:
         lines += ["", "## Assumptions accepted automatically", ""]

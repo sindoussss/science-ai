@@ -198,6 +198,11 @@ one JSON object per model call: the system prompt, the user prompt, the JSON sch
 sent as the output format, and the raw reply. Read it when a suite fails at formalization, since
 that is the only place the prompt, the schema and the reply sit side by side.
 
+A failing row carries its cause without the trace file. An out-of-scope row shows what the graph
+recorded -- the route that could not answer the question, or the slot the question does not
+contain and the value the model put in it -- rather than the sentence every out-of-scope question
+gets, and the saved report quotes the raw replies for every failing problem underneath the table.
+
 `--suite chem` first standardizes five spellings of aspirin with no model call, and reports whether
 they collapse to one InChIKey (if they do not, nothing else the suite says about chemistry means
 anything). It then asks eight questions: identity, descriptors against reference values, a logP, a
