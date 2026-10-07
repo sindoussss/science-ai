@@ -16,7 +16,7 @@ from typing import Any, Callable
 import jsonschema
 
 from sciai.config import Config
-from sciai.controller import lookup
+from sciai.controller import lookup, recipes
 from sciai.controller.answer import render
 from sciai.controller.provenance import numbers_in, unsourced
 from sciai.domains.chem import decline as chem_decline
@@ -38,7 +38,13 @@ from sciai.graph.model import (
     Status,
     TERMINAL_BAD,
 )
-from sciai.llm.actions import Action, ActionError, check_answer_template, parse_action
+from sciai.llm.actions import (
+    Action,
+    ActionError,
+    check_answer_template,
+    check_question,
+    parse_action,
+)
 from sciai.llm.client import LLM, ContextOverflow, LLMUnavailable, estimate_tokens
 from sciai.llm.roles import ROLES, retry_role
 from sciai.tools.registry import ToolSpec
@@ -76,7 +82,7 @@ class Declined(Exception):
 @dataclass
 class TaskResult:
     status: str  # answered | reused | escalated | needs_user | step_limit | stopped | error
-                 #        | rejected | declined
+                 #        | rejected | declined | out_of_scope
     answer: str = ""
     final_node: str | None = None
     verified: bool = False
@@ -168,18 +174,23 @@ class Controller:
         if hit is not None and not self._stale_data(hit):
             return self._reuse_answer(hit)
 
+        self._pending_plan = None
         root_or_result = self._formalize(question)
         if isinstance(root_or_result, TaskResult):
             return root_or_result
         root = root_or_result
+        plan, self._pending_plan = self._pending_plan, None
+        if plan is not None:
+            return self._run_recipe(root, plan)
 
         goal = (root.tool_inputs or {}).get("goal")
         observation = "Start: plan the first step."
+        self._next_role = "controller"
         if goal:
             done, observation = self._try_goal(root, goal)
             if done is not None:
                 return done
-        return self._loop(root, observation)
+        return self._loop(root, observation, self._next_role)
 
     def _stale_data(self, final: Node) -> bool:
         """An answer read a dataset that has since been re-imported with different contents
@@ -202,10 +213,32 @@ class Controller:
                           assumptions=list((final.tool_inputs or {}).get("assumptions") or []))
 
     def _formalize(self, question: str) -> Node | TaskResult:
+        """One model call: which recipe, and its slots.
+
+        This is the router. The model's only planning freedom is the ``recipe`` enum, so a
+        question that fits a recipe is answered by code from here on and costs this one call.
+        Three enum values are not recipes: ``none`` says the question is out of scope, and the
+        two delegated routes hand it to the dataset and chemistry paths, which do their own
+        validation below exactly as before.
+        """
         role = ROLES["formalizer"]
         givens: dict[str, dict[str, Any]] = {}
+        plan: list[recipes.Plan] = []
 
         def validate(a: Action) -> None:
+            route = a["recipe"]
+            plan.clear()
+            givens.clear()
+            if route == recipes.NONE:
+                return
+            if route in recipes.RECIPES:
+                try:
+                    plan.append(recipes.RECIPES[route].plan(a.get("slots") or {}))
+                except recipes.SlotError as exc:
+                    # A slot holding the wrong kind of thing is the one failure worth a retry:
+                    # the model wrote something, and the message says what the slot takes.
+                    raise ActionError(str(exc)) from None
+                return
             goal = a.get("goal")
             # Capability first, and before the goal is validated: a request nothing serves is
             # declined once, rather than sent back to the model as an invalid action.
@@ -218,7 +251,6 @@ class Controller:
             for name, kind in (a.get("assumptions") or {}).items():
                 if kind not in SYMBOL_ASSUMPTIONS:
                     raise ActionError(f"assumption {kind!r} for {name!r} is not allowed")
-            givens.clear()
             givens.update(self._normalize_givens(a.get("givens") or {}))
 
         data = self._datasets_text(question)
@@ -228,28 +260,47 @@ class Controller:
             action = self._ask(role.name, user, ("formalize",), validate)
         except Declined as exc:
             return self._decline(exc.refusal)
+        except recipes.MissingSlots as missing:
+            # The question does not contain a value the recipe needs. No amount of re-prompting
+            # produces a number the question never had, so the user is asked, not the model.
+            return self._needs_slots(question, missing)
         except ActionError as exc:
             self._error_node("could not formalize the question", str(exc), [])
             return TaskResult("error", detail=f"formalization failed: {exc}")
 
+        if action["recipe"] == recipes.NONE:
+            return self._out_of_scope(question, action["statement"])
+        self._pending_plan = plan[0] if plan else None
         assumptions = action.get("assumptions") or {}
         goal = action.get("goal")
         if goal is not None and assumptions:
             spec = get_tool(goal["tool"])
             if "assumptions" in spec.schema.get("properties", {}):
                 goal.setdefault("args", {}).setdefault("assumptions", assumptions)
-        problem_type = normalize_type(action.get("problem_type"))
+        # A recipe names its own problem type, so the default-assumptions checklist is not
+        # the model's choice either: picking the recipe is what decided the kind of problem.
+        plan_recipe = recipes.RECIPES.get(action["recipe"])
+        problem_type = normalize_type(plan_recipe.problem_type if plan_recipe
+                                      else action.get("problem_type"))
         items = checklist(problem_type, action.get("modelling_assumptions"))
+        # A recipe's slots are this problem's givens, so they are sources in exactly the same
+        # way, and a slot the model filled with a number the question never had is unsourced.
+        supplied = givens.keys()
+        if self._pending_plan is not None and plan_recipe is not None:
+            givens = plan_recipe.sources(self._pending_plan.values)
+            supplied = {k for k in givens if k in self._pending_plan.supplied}
         # A given is a source for later tool calls only if its number is in the question.
         in_question = numbers_in(question)
-        unsourced_givens = sorted(k for k, v in givens.items() if not numbers_in(v["value"]) <= in_question)
+        unsourced_givens = sorted(k for k, v in givens.items()
+                                  if k in supplied and not numbers_in(v["value"]) <= in_question)
         root = Node(
             session_id="", layer=Layer.REASONING, type=NodeType.PROBLEM, title="Problem",
             content=action["statement"], content_canonical=normalize_question(question),
             fingerprint=question_fingerprint(question),
             tool_inputs={"question": question, "assumptions": assumptions, "goal": goal,
                          "problem_type": problem_type, "givens": givens, "checklist": items,
-                         "unsourced_givens": unsourced_givens},
+                         "unsourced_givens": unsourced_givens, "recipe": action["recipe"],
+                         "slots": dict(self._pending_plan.values) if self._pending_plan else {}},
             role=role.name,
             flags=[f"unsourced_givens: {', '.join(unsourced_givens)}"] if unsourced_givens else [],
         )
@@ -266,6 +317,7 @@ class Controller:
                 root.content = statement.strip()
                 root.tool_inputs = {**(root.tool_inputs or {}), "goal": None, "edited_by_user": True}
                 self.engine.update(root)
+                self._pending_plan = None
         self._create_assumptions(root, items, rejected)
         return root
 
@@ -333,11 +385,101 @@ class Controller:
             if not pre.lines:
                 handle = self.engine.handle(node.id)
                 return self._finalize(root, "Answer: {{%s}}" % handle, [handle]), ""
+            self._next_role = pre.next_role
             return None, "\n".join(out.lines + pre.lines)
+        self._next_role = out.next_role
         return None, "\n".join(out.lines)
 
-    def _loop(self, root: Node, observation: str) -> TaskResult:
-        role = "controller"
+    # --------------------------------------------------------------- recipes
+    def _run_recipe(self, root: Node, plan: recipes.Plan) -> TaskResult:
+        """Run a recipe's steps and write its answer, with no further model call.
+
+        Every step's tool call is built by code from the slot values and the results of the
+        steps before it, so an easy question costs exactly the one call that chose the recipe.
+        Nothing here weakens a check: each call goes through ``_execute_tool``, which applies
+        the risk rules and runs the required checks, and the answer still comes from
+        ``_finalize`` filling a template from node results.
+
+        A step whose independent check fails hands over to the failure ladder, which is the
+        recovery the rest of the system already uses: the retry is of the one call that failed,
+        by the specialist role the ladder chose, and the recipe itself is never re-planned by
+        the model. A step that cannot be built or run at all is reported as it happened.
+        """
+        handles: list[str] = []
+        results: list[dict[str, Any]] = []
+        deps = [root.id]
+        for build in plan.steps:
+            try:
+                built = build(plan.values, results)
+            except recipes.SlotError as exc:
+                return self._recipe_failed(root, plan, str(exc))
+            if built is None:
+                continue
+            tool, args, title = built
+            try:
+                out = self._execute_tool(root, tool, dict(args), list(deps), None, "controller", title=title)
+            except StepError as exc:
+                return self._recipe_failed(root, plan, f"{title} could not be computed: {exc}")
+            if out.result is not None:
+                return out.result
+            node = self._last_tool_node
+            if node is None:
+                return self._recipe_failed(root, plan, "the step produced no result")
+            node = self.engine.resolve(node.id)
+            if node.status in TERMINAL_BAD:
+                # The recipe was the right plan and its tool failed its independent check. That
+                # is what the failure ladder is for, and it has already chosen the specialist
+                # role for the retry, so recovery goes step by step from here. The recipe is
+                # never re-planned by the model: what is re-tried is the one call that failed.
+                return self._loop(root, "\n".join(out.lines), out.next_role)
+            handles.append(self.engine.handle(node.id))
+            results.append(node.result or {})
+            deps = [node.id]
+        if not handles:
+            return self._recipe_failed(root, plan, "no step of the recipe produced a result")
+        nodes = [self.engine.resolve(h) for h in handles]
+        pre = self._ensure_verified(nodes)
+        if pre.result is not None:
+            return pre.result
+        if any(self.engine.resolve(n.id).status in TERMINAL_BAD for n in nodes):
+            return self._loop(root, "\n".join(pre.lines) or "a check failed", pre.next_role)
+        return self._finalize(root, plan.answer(plan.values, handles), handles)
+
+    def _recipe_failed(self, root: Node, plan: recipes.Plan, why: str) -> TaskResult:
+        self._error_node(f"the {plan.recipe} recipe did not answer the question", why, [root.id])
+        return TaskResult("error", detail=f"{plan.recipe}: {why}")
+
+    def _needs_slots(self, question: str, missing: recipes.MissingSlots) -> TaskResult:
+        """A required slot the question does not contain, recorded and asked about."""
+        names = ", ".join(s.name for s in missing.slots)
+        node = Node(session_id="", layer=Layer.REASONING, type=NodeType.HINT,
+                    title="Missing value", role="controller",
+                    content=f"The {missing.recipe} recipe needs {names}, which the question does "
+                            f"not give.",
+                    tool_inputs={"question": question, "recipe": missing.recipe,
+                                 "missing": [s.name for s in missing.slots]})
+        self.engine.add_node(node)
+        return TaskResult("needs_user", question=missing.question(), final_node=node.id)
+
+    def _out_of_scope(self, question: str, statement: str) -> TaskResult:
+        """The router found no recipe for the question. It says so and lists what it has."""
+        node = Node(session_id="", layer=Layer.REASONING, type=NodeType.HINT,
+                    title="Out of scope", role="controller",
+                    content=f"No recipe fits this question: {statement}",
+                    tool_inputs={"question": question, "recipe": recipes.NONE,
+                                 "supported": list(recipes.RECIPES)})
+        self.engine.add_node(node)
+        return TaskResult("out_of_scope", detail=recipes.out_of_scope(question),
+                          final_node=node.id)
+
+    def _loop(self, root: Node, observation: str, role: str = "controller") -> TaskResult:
+        """Step-by-step recovery. Reached when a recipe step or a delegated goal fails its
+        check, and for the dataset and molecule routes, which plan their own steps.
+
+        ``role`` is the role the ladder chose for the retry. It used to be hard-coded to
+        "controller", so a tool call made outside the loop that failed its check lost the
+        specialist the ladder had just picked; the retry then came from the general controller,
+        which knows the least about the tool that failed."""
         invalid_streak = 0
         for step in range(1, self.cfg.controller.max_steps + 1):
             if self._stop.is_set():
@@ -455,8 +597,12 @@ class Controller:
                 p.checker for p, _ in self.verifier.offered(node)}
             if a.get("check") and a["check"] not in offered:
                 raise ActionError(f"check {a['check']!r} is not offered for {a['node']}; offered: {sorted(offered)}")
+        elif a.kind == "ask_user":
+            check_question(a["question"])
         elif a.kind == "finish":
-            check_answer_template(a["answer_template"], a["answer_nodes"])
+            root = self.engine.root()
+            check_answer_template(a["answer_template"], a["answer_nodes"],
+                                  (root.tool_inputs or {}).get("question", "") if root else "")
             kinds = set()
             for ref in a["answer_nodes"]:
                 node = self._resolve_handle(ref)
@@ -490,6 +636,8 @@ class Controller:
         raise StepError(f"unhandled action {a.kind}")
 
     _last_tool_node: Node | None = None
+    _pending_plan: "recipes.Plan | None" = None
+    _next_role: str = "controller"
 
     def _execute_tool(self, root: Node, tool: str, args: dict[str, Any], deps: list[str],
                       replaces: str | None, role: str, title: str | None = None) -> StepOutcome:
@@ -968,4 +1116,6 @@ class Controller:
             return f"{r.answer}{tag}"
         if r.status == "needs_user":
             return r.question or "I need more information."
+        if r.status in ("declined", "out_of_scope"):
+            return r.detail
         return f"[{r.status}] {r.detail}"

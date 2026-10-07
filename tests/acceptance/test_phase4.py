@@ -21,7 +21,7 @@ CAFFEINE = "Cn1cnc2c1c(=O)n(C)c(=O)n2C"
 IBUPROFEN = "CC(C)Cc1ccc(cc1)C(C)C(=O)O"
 
 QUESTION = f"What are the molecular properties of {ASPIRIN}?"
-FORMAL = {"action": "formalize", "operation": "descriptors",
+FORMAL = {"action": "formalize", "recipe": "molecule_question", "operation": "descriptors",
           "statement": f"Compute the standard descriptors of the structure {ASPIRIN}."}
 
 
@@ -105,7 +105,8 @@ def test_a_corrupted_molecular_weight_is_caught_by_the_recomputation(make_rt, ru
     ("toxicity", "Which of these is the most toxic?", "generic"),
 ])
 def test_a_request_no_tool_serves_is_declined_once(make_rt, operation, asked, rule):
-    rt = make_rt(ScriptedLLM([{"action": "formalize", "statement": asked, "operation": operation}]))
+    rt = make_rt(ScriptedLLM([{"action": "formalize", "recipe": "molecule_question", "statement": asked,
+                                 "operation": operation}]))
     rt.engine.new_session("declined")
     res = rt.controller.run(asked)
 
@@ -124,7 +125,8 @@ def test_a_served_operation_is_not_declined_for_the_words_around_it(make_rt):
     """Change 2: keywords choose wording, never whether to decline."""
     asked = f"The synthesis paper reports {ASPIRIN}; what is its molecular weight?"
     goal = {"tool": "chem.descriptors", "args": {"structure": ASPIRIN}}
-    rt = make_rt(ScriptedLLM([{"action": "formalize", "statement": asked, "operation": "descriptors",
+    rt = make_rt(ScriptedLLM([{"action": "formalize", "recipe": "molecule_question", "statement": asked,
+                                 "operation": "descriptors",
                               "goal": goal}, finish("chem.descriptors")]))
     rt.engine.new_session("wording")
     res = rt.controller.run(asked)
@@ -135,7 +137,7 @@ def test_a_served_operation_is_not_declined_for_the_words_around_it(make_rt):
 
 def test_a_goal_naming_a_tool_that_does_not_exist_is_declined_not_retried(make_rt):
     asked = "Plan a route to this molecule."
-    rt = make_rt(ScriptedLLM([{"action": "formalize", "statement": asked,
+    rt = make_rt(ScriptedLLM([{"action": "formalize", "recipe": "molecule_question", "statement": asked,
                               "goal": {"tool": "chem.synthesize", "args": {"structure": ASPIRIN}}}]))
     rt.engine.new_session("no such tool")
     res = rt.controller.run(asked)
@@ -150,7 +152,8 @@ def test_every_library_member_is_screened_and_the_ranking_is_rechecked(make_rt):
                            {"name": "ibuprofen", "structure": IBUPROFEN}]}
     asked = "Which of these two is nearest to aspirin?"
     goal = {"tool": "chem.similar", "args": {"structure": ASPIRIN, "library": library}}
-    rt = make_rt(ScriptedLLM([{"action": "formalize", "statement": asked, "operation": "similarity",
+    rt = make_rt(ScriptedLLM([{"action": "formalize", "recipe": "molecule_question", "statement": asked,
+                                 "operation": "similarity",
                               "goal": goal}, finish("chem.similar")]))
     rt.engine.new_session("similar")
     res = rt.controller.run(asked)

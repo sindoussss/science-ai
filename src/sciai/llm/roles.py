@@ -21,6 +21,10 @@ class Role:
 
     def system_prompt(self) -> str:
         text = resources.files("sciai.llm").joinpath("prompts", self.prompt_file).read_text(encoding="utf-8")
+        if "{RECIPES}" in text:
+            from sciai.controller.recipes import prompt_block
+
+            text = text.replace("{RECIPES}", prompt_block())
         return text.replace("{TOOLS}", self.tool_lines())
 
 
@@ -37,7 +41,9 @@ SOLVERS = ("sympy.", "numeric.evaluate", "numeric.quad", "numeric.root", "units.
            *DATA_SOLVERS, *CHEM_SOLVERS)
 
 ROLES: dict[str, Role] = {
-    "formalizer": Role("formalizer", "formalize.md", SOLVERS),
+    # The router's tools are only the ones a delegated route may name in a goal: a maths or
+    # physics question goes through a recipe, so no goal of its own can reach this role.
+    "formalizer": Role("formalizer", "formalize.md", (*DATA_SOLVERS, *CHEM_SOLVERS)),
     "controller": Role("controller", "controller.md", SOLVERS),
     "algebra": Role("algebra", "algebra.md", ("sympy.",)),
     "numeric": Role("numeric", "numeric.md", ("numeric.evaluate", "numeric.quad", "numeric.root", "units.convert")),

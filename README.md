@@ -211,14 +211,31 @@ pytest
 ## How a question flows
 
 1. Knowledge-store lookup (no model call). A verified answer to the same question is reused.
-2. One model call formalizes the question into the root node, which you confirm or edit. For a
-   physics problem it also names the problem type and the given values with their units. The
-   type's default assumptions (no air resistance, ideal wires...) are offered as a checklist; each
-   ticked one becomes an assumption node, and rejecting it later invalidates everything built on it.
-3. If the formal goal is a single tool call that is already verified, it is reused; otherwise it runs.
-4. Otherwise the controller loop: one JSON action per model call, validated, executed in the tool sandbox.
-5. Hard-coded risk rules (stakes, surprise, confidence, step type, units) decide when a node needs an
-   independent check. A failed check walks the ladder: retry with a different method, backtrack,
-   then escalate with both results side by side.
+2. One model call routes the question to a recipe and fills that recipe's slots. The recipe list
+   is a closed enum, so this is the whole of the model's planning; a question no recipe covers
+   comes back as out of scope with the list of what there is. The root node holds the slots, and
+   you confirm or edit it. The recipe also names the problem type, so the type's default
+   assumptions (no air resistance, ideal wires...) are offered as a checklist; each ticked one
+   becomes an assumption node, and rejecting it later invalidates everything built on it.
+3. Code then runs the recipe's tool calls, building each from the slots and the results before
+   it, so an easy question costs exactly that one model call. A call whose result is already
+   verified in the store is reused instead of run.
+4. Hard-coded risk rules (stakes, surprise, confidence, step type, units) decide when a node needs
+   an independent check; a recipe's own tools are always checked, including that the answer is in
+   the unit the question asked for. A failed check walks the ladder: retry with a different method
+   or by the specialist role for that tool, backtrack, then escalate with both results side by side.
+5. A dataset or molecule question goes to the step-by-step controller loop instead: one JSON action
+   per model call, validated, executed in the tool sandbox.
 6. The final answer is a template whose values are filled from node results, so the model never
-   writes a number.
+   writes a number. For a recipe the sentence is written by code, and it never names the unit,
+   because the value renders with it.
+
+### The recipes
+
+`unit_convert` (including degC and degF), `definite_integral`, `solve_equation`,
+`area_between_curves`, `ode_ivp`, `projectile_range`, `photon_energy`, `rc_discharge`,
+`series_parallel_current`. Each one has named slots -- numbers, units, expressions, variables --
+and `src/sciai/controller/recipes.py` holds them, their two worked examples apiece, and the tool
+calls each one makes. A number slot takes only the number; its unit lives in the matching
+`*_unit` slot, and an expression slot takes an expression, which is what the old quantity-only
+`givens` could not hold.

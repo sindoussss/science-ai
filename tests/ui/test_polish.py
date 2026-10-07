@@ -82,6 +82,10 @@ def test_every_scroll_area_uses_thin_overlay_bars_shown_on_hover_or_scroll(fault
     win.workspace.show_graph()
     area = win.chat.scroll
     bar = next(b for b in area.findChildren(OverlayBar) if b.orientation() == Qt.Orientation.Vertical)
+    # A routed question is short, so the thread fits in the viewport; the bar's behaviour is
+    # what is under test, so the thread is filled until it overflows.
+    for i in range(12):
+        win.chat.add_assistant(f"A longer line of transcript, number {i}, to fill the thread.")
     pump(app, lambda: True)
     assert bar.scrollable()
     assert not bar.isVisible()  # hidden at rest

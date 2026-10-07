@@ -53,39 +53,51 @@ class Problem:
     rel_tol: float = 1e-6  # data answers are checked against references given to 4-5 digits
     hypothesis: bool = False  # chemistry: the right answer is a hypothesis, never verified
     declined: str | None = None  # the wording rule the decline must use ("route", "generic", ...)
+    # The planning cost this problem should have. A recipe answers in one model call (the
+    # router), and every step after it is built by code, so anything more means the router did
+    # not settle the question. Re-asks after invalid JSON are counted separately, in "JSON
+    # retries", and are not charged here: they measure the model's formatting, not its planning.
+    max_calls: int | None = None
 
 
 PROBLEMS = [
     Problem("integral", "Compute the definite integral of x^2*exp(-x) from x = 0 to x = 1.",
-            (2 - 5 / math.e,), "2 - 5/e ≈ 0.160603"),
-    Problem("equation", "Solve x^2 - 5*x + 6 = 0 for x.", (2.0, 3.0), "x = 2, 3"),
-    Problem("units", "Convert 60 miles per hour to meters per second.", (26.8224,), "26.8224 m/s"),
+            (2 - 5 / math.e,), "2 - 5/e ≈ 0.160603", max_calls=1,
+            note="definite_integral: the integrand is an expression slot, not a quantity"),
+    Problem("equation", "Solve x^2 - 5*x + 6 = 0 for x.", (2.0, 3.0), "x = 2, 3", max_calls=1,
+            note="solve_equation"),
+    Problem("units", "Convert 60 miles per hour to meters per second.", (26.8224,), "26.8224 m/s",
+            max_calls=1, note="unit_convert"),
     Problem("ode", "Solve the differential equation dy/dx = 6*x^2 - 4*x with y(0) = 1, then give y(2).",
-            (9.0,), "y(2) = 9",
-            note="solvable with ode.dsolve or by integrating both sides"),
+            (9.0,), "y(2) = 9", max_calls=1,
+            note="ode_ivp: two tool calls (solve, then evaluate) from the one routing call"),
     Problem("hard", "Find the area of the region enclosed between the curves y = x^3 - 3*x and y = x.",
-            (8.0,), "8", note="multi-step (intersections, then |difference| on two intervals); expected to fail"),
+            (8.0,), "8", max_calls=1,
+            note="area_between_curves: the crossings, |f-g| on each interval, and the area > 0 guard"),
     Problem("repeat", "Compute the definite integral of x^2*exp(-x) from x = 0 to x = 1.",
-            (2 - 5 / math.e,), "reused, 0 model calls", reuse_of="integral"),
+            (2 - 5 / math.e,), "reused, 0 model calls", reuse_of="integral", max_calls=0),
 ]
 
 
 PHYSICS_PROBLEMS = [
     Problem("projectile", "A ball is thrown at 20 m/s at 30 degrees above level ground. How far away does it "
             "land? Use g = 9.80665 m/s^2.", (400 * math.sin(math.radians(60)) / 9.80665,), "35.324 m",
-            note="degrees must become radians before the sine"),
-    Problem("temperature", "Convert 25 degC to kelvin.", (298.15,), "298.15 K",
-            note="an absolute temperature, not a difference"),
+            max_calls=1, note="projectile_range: the recipe holds the formula and the radians"),
+    Problem("temperature", "Convert 25 degC to kelvin.", (298.15,), "298.15 K", max_calls=1,
+            note="unit_convert: an absolute temperature, not a difference"),
     Problem("photon", "What is the energy of a photon with a wavelength of 500 nm?",
-            (6.62607015e-34 * 299792458 / 500e-9,), "3.9729e-19 J", note="constants from CODATA"),
+            (6.62607015e-34 * 299792458 / 500e-9,), "3.9729e-19 J", max_calls=1,
+            note="photon_energy: constants from CODATA, checked against pint's own table"),
     Problem("rc", "A 1 uF capacitor charged to 5 V discharges through a 1 kohm resistor. What is its voltage "
-            "after 2 ms?", (5 * math.exp(-2),), "0.67668 V"),
+            "after 2 ms?", (5 * math.exp(-2),), "0.67668 V", max_calls=1,
+            note="rc_discharge: checked by solving dV/dt = -V/RC numerically"),
     Problem("circuit", "A 12 V source drives a 100 ohm resistor in series with two 200 ohm resistors in "
-            "parallel. What current flows from the source?", (0.06,), "0.06 A",
-            note="the source current's sign is a convention, so only its magnitude counts", signed=False),
+            "parallel. What current flows from the source?", (0.06,), "0.06 A", max_calls=1,
+            note="series_parallel_current: the netlist is built from the slots; the source "
+                 "current's sign is a convention, so only its magnitude counts", signed=False),
     Problem("repeat", "A ball is thrown at 20 m/s at 30 degrees above level ground. How far away does it "
             "land? Use g = 9.80665 m/s^2.", (400 * math.sin(math.radians(60)) / 9.80665,),
-            "reused, 0 model calls", reuse_of="projectile"),
+            "reused, 0 model calls", reuse_of="projectile", max_calls=0),
 ]
 DATA_DIR = ROOT / "tests" / "fixtures" / "data"
 DATA_FILES = ("trial.csv", "plantgrowth.tsv", "sleep.xlsx")
@@ -265,6 +277,7 @@ def run_problem(rt: Any, llm: CountingLLM, p: Problem) -> Row:
         asked = res.status == "needs_user" and res.question
         row.why = f"asked: {res.question}" if asked else (res.detail or res.status)
         return row
+    planning = res.llm_calls - row.retries
     final = rt.engine.resolve(res.final_node)
     for nid in (final.tool_inputs or {}).get("answer_nodes", []):
         row.values += _numbers(rt.engine.resolve(nid).result)
@@ -284,6 +297,9 @@ def run_problem(rt: Any, llm: CountingLLM, p: Problem) -> Row:
         row.why = f"expected the stored hypothesis to be reused, got {res.llm_calls} model calls"
     elif p.reuse_of and not p.hypothesis and (res.status != "reused" or res.llm_calls != 0):
         row.why = f"expected reuse with 0 model calls, got {res.status} with {res.llm_calls}"
+    elif p.max_calls is not None and planning > p.max_calls:
+        row.why = (f"right value, but it took {planning} planning call(s) and should take "
+                   f"{p.max_calls}")
     else:
         row.passed = True
     return row

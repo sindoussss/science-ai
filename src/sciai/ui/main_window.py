@@ -378,7 +378,7 @@ class MainWindow(QMainWindow):
                 self._select_and_show(result.final_node)
         elif result.status == "needs_user":
             self.chat.add_assistant(result.question or "", caption)
-        elif result.status == "declined":
+        elif result.status in ("declined", "out_of_scope"):
             self.chat.add_assistant(result.detail, caption)
         elif result.status == "escalated":
             self._report_steps(result)

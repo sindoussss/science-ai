@@ -46,7 +46,7 @@ def test_layout_metrics(fault_window, size):
     assert 0.92 <= m.scale <= 1.3
     assert m.title_px >= 12
     assert m.composer == ["status strip", "+", "tools", "mic", "send", "input"]
-    assert m.pills == ["Graph", "n2 · f'(x)"]
+    assert m.pills == ["Graph", "n2 · the integral"]
     assert m.node_tabs == NODE_TABS
     assert m.live in ("Live", "Idle")
     assert m.clipped == []

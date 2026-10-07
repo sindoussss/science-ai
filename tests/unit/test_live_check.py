@@ -23,18 +23,20 @@ def lc():
     sys.modules.pop("live_check", None)
 
 
-INTEGRAL_GOAL = {"action": "formalize", "statement": "Compute the integral of x**2*exp(-x) over [0, 1].",
-                 "goal": {"tool": "sympy.integrate",
-                          "args": {"expr": "x**2*exp(-x)", "var": "x", "lower": "0", "upper": "1"}}}
+INTEGRAL_ROUTE = {"action": "formalize", "recipe": "definite_integral",
+                  "statement": "Compute the integral of x**2*exp(-x) over [0, 1].",
+                  "slots": {"integrand": "x**2*exp(-x)", "var": "x", "lower": "0", "upper": "1"}}
 
 
 def test_counts_retries_calls_and_reuse(lc, make_rt):
-    llm = lc.CountingLLM(ScriptedLLM(["not json at all", INTEGRAL_GOAL]))
+    llm = lc.CountingLLM(ScriptedLLM(["not json at all", INTEGRAL_ROUTE]))
     rt = make_rt(llm)
     first, repeat = lc.PROBLEMS[0], lc.PROBLEMS[-1]
     assert repeat.question == first.question and repeat.reuse_of == first.key
 
     row = lc.run_problem(rt, llm, first)
+    # Two calls, one of them the re-ask after invalid JSON: the planning budget of 1 counts
+    # the routing call only, which is what the recipe library was meant to bring down.
     assert row.passed, row
     assert (row.status, row.calls, row.retries, row.ladder) == ("answered", 2, 1, "none")
 
@@ -44,11 +46,35 @@ def test_counts_retries_calls_and_reuse(lc, make_rt):
 
 
 def test_a_wrong_value_fails_with_the_reason(lc, make_rt):
-    wrong = {**INTEGRAL_GOAL, "goal": {"tool": "sympy.integrate",
-                                       "args": {"expr": "x**2*exp(-x)", "var": "x", "lower": "0", "upper": "2"}}}
+    wrong = {**INTEGRAL_ROUTE, "slots": {**INTEGRAL_ROUTE["slots"], "upper": "2"}}
     llm = lc.CountingLLM(ScriptedLLM([wrong]))
     row = lc.run_problem(make_rt(llm), llm, lc.PROBLEMS[0])
     assert not row.passed and "expected" in row.why
+
+
+def test_too_many_planning_calls_fails_even_with_the_right_value(lc, make_rt, runner):
+    """Item 4 of the consolidated fix, as the live check measures it: an easy problem costs one
+    model call. A right answer that took a second round of planning is still a failure."""
+    from sciai.tools.faults import FaultyRunner
+
+    def retry(prompt):
+        from tests.fakes.fake_llm import last_handle
+        bad = last_handle(prompt, "sympy.integrate")
+        return {"action": "call_tool", "tool": "sympy.integrate", "replaces": bad,
+                "args": {"expr": "x**2*exp(-x)", "var": "x", "lower": "0", "upper": "1",
+                         "method": "meijerg"}}
+
+    def finish(prompt):
+        from tests.fakes.fake_llm import last_handle
+        h = last_handle(prompt, "sympy.integrate", status="proposed")
+        return {"action": "finish", "answer_template": f"The integral is {{{{{h}}}}}.",
+                "answer_nodes": [h]}
+
+    faulty = FaultyRunner(runner, "sympy.integrate", "1/3", calls={1})
+    llm = lc.CountingLLM(ScriptedLLM([INTEGRAL_ROUTE, retry, finish]))
+    row = lc.run_problem(make_rt(llm, run=faulty), llm, lc.PROBLEMS[0])
+    assert not row.passed, row
+    assert row.why == "right value, but it took 3 planning call(s) and should take 1"
 
 
 def test_retry_markers_match_the_controller(lc):
@@ -73,6 +99,9 @@ def test_report_table_and_file_name(lc):
 
 def test_six_problems_of_the_requested_kinds(lc):
     assert [p.key for p in lc.PROBLEMS] == ["integral", "equation", "units", "ode", "hard", "repeat"]
+    # Every one of them is a recipe, so each should cost the single routing call.
+    assert [p.max_calls for p in lc.PROBLEMS] == [1, 1, 1, 1, 1, 0]
+    assert [p.max_calls for p in lc.PHYSICS_PROBLEMS] == [1, 1, 1, 1, 1, 0]
     args = lc.parse_args(["--model", "llama3.1:8b", "--no-think"])
     assert (args.model, args.think) == ("llama3.1:8b", False)
 
@@ -85,17 +114,28 @@ def test_physics_suite(lc, make_rt):
     assert lc._numbers({"kind": "quantity", "value": 25.0, "unit": "degC", "si_value": 298.15}) == [25.0, 298.15]
     assert not lc._close(3.97e-19, 0.0) and lc._close(-0.06, 0.06, signed=False) and not lc._close(-0.06, 0.06)
 
-    temp = {"action": "formalize", "statement": "Convert 25 degC to kelvin.", "problem_type": "thermo",
-            "givens": {"T": {"value": 25, "unit": "degC", "kind": "absolute_temperature"}},
-            "goal": {"tool": "phys.evaluate", "args": {
-                "expr": "T", "values": {"T": {"value": 25, "unit": "degC", "kind": "absolute_temperature"}},
-                "to_unit": "K", "kind": "absolute_temperature"}}}
+    temp = {"action": "formalize", "recipe": "unit_convert",
+            "statement": "Convert 25 degC to kelvin.",
+            "slots": {"value": "25", "from_unit": "degC", "to_unit": "K",
+                      "kind": "absolute_temperature"}}
     llm = lc.CountingLLM(ScriptedLLM([temp]))
     row = lc.run_problem(make_rt(llm), llm, lc.PHYSICS_PROBLEMS[1])
     assert row.passed, row
-    assert row.assumptions == ["ideal gas", "quasi-static process", "closed system"]
+    assert (row.calls, row.retries) == (1, 0)
+
+    # The assumptions a physics recipe carries are its problem type's, and the physics suite
+    # accepts them automatically because nobody is there to tick the checklist.
+    projectile = {"action": "formalize", "recipe": "projectile_range",
+                  "statement": "Range at 20 m/s, 30 degrees.",
+                  "slots": {"v0": "20", "v0_unit": "m/s", "angle": "30", "angle_unit": "deg",
+                            "g": "9.80665", "g_unit": "m/s^2", "to_unit": "m"}}
+    llm = lc.CountingLLM(ScriptedLLM([projectile]))
+    row = lc.run_problem(make_rt(llm), llm, lc.PHYSICS_PROBLEMS[0])
+    assert row.passed, row
+    assert row.assumptions == ["no air resistance", "constant g = 9.80665 m/s^2",
+                               "launch and landing at the same height"]
     text = lc.report([row], {"model": "m", "suite": "physics"})
-    assert "## Assumptions accepted automatically" in text and "ideal gas; quasi-static process" in text
+    assert "## Assumptions accepted automatically" in text and "no air resistance" in text
 
 
 def test_data_suite(lc, make_rt, cfg, tmp_path):
@@ -115,8 +155,8 @@ def test_data_suite(lc, make_rt, cfg, tmp_path):
         "trial.csv (40 x 7), plantgrowth.tsv (30 x 2), sleep.xlsx (20 x 3)"
 
     def goal(tool, **args):
-        return {"action": "formalize", "statement": "data question", "problem_type": "data",
-                "goal": {"tool": tool, "args": args}}
+        return {"action": "formalize", "recipe": "dataset_question", "statement": "data question",
+                "problem_type": "data", "goal": {"tool": tool, "args": args}}
 
     row = ask(welch, goal("stats.ttest", dataset="trial.csv", column="score", by="group"))
     assert row.passed, row

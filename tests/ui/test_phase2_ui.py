@@ -13,13 +13,7 @@ from sciai.ui.confirm_dialog import ConfirmProblemDialog  # noqa: E402
 from sciai.ui.controller_thread import RootConfirmer  # noqa: E402
 from sciai.ui.main_window import MainWindow  # noqa: E402
 from sciai.ui.theme.theme import Theme, load_bundled_fonts  # noqa: E402
-from tests.acceptance.test_phase2 import (  # noqa: E402
-    CONST_G,
-    PROJECTILE_FORMAL,
-    PROJECTILE_Q,
-    finish_range,
-    range_step,
-)
+from tests.acceptance.test_phase2 import PROJECTILE_Q, PROJECTILE_ROUTE  # noqa: E402
 from tests.fakes.fake_llm import ScriptedLLM  # noqa: E402
 
 
@@ -49,7 +43,7 @@ def test_assumption_chip_labels():
 
 @pytest.fixture
 def window(qtbot, make_rt):
-    rt = make_rt(ScriptedLLM([PROJECTILE_FORMAL, CONST_G, range_step, finish_range]))
+    rt = make_rt(ScriptedLLM([PROJECTILE_ROUTE]))
     theme = Theme.load("light")
     from PyQt6.QtWidgets import QApplication
     app = QApplication.instance()

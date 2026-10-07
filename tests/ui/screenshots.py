@@ -36,7 +36,7 @@ def main() -> None:
     from sciai.ui.controller_thread import RootConfirmer
     from sciai.ui.main_window import MainWindow
     from sciai.ui.theme.theme import Theme
-    from tests.acceptance.test_phase1 import QUESTION
+    from tests.acceptance.test_phase1 import QUESTION  # noqa: F401
     from tests.ui.metrics import (
         TABLE_HEAD,
         failed_diff,

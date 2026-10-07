@@ -26,7 +26,12 @@ from sciai.ui.controller_thread import RootConfirmer
 from sciai.ui.main_window import MainWindow
 from sciai.ui.shell import ElidedLabel
 from sciai.ui.theme.theme import Theme, load_bundled_fonts
-from tests.acceptance.test_phase1 import DIFF, FORMAL, QUESTION, finish_value, retry_diff, subs_step
+from tests.acceptance.test_phase1 import (
+    INTEGRAL_Q,
+    INTEGRAL_ROUTE,
+    finish_integral,
+    retry_integral,
+)
 from tests.fakes.fake_llm import ScriptedLLM
 
 NODE_TITLE_PX = 13
@@ -34,12 +39,12 @@ TITLE_FULL_CHARS = 22
 
 
 def fault_script() -> ScriptedLLM:
-    return ScriptedLLM([FORMAL, DIFF, subs_step, finish_value, retry_diff("first_principles"), subs_step,
-                        finish_value])
+    """The recipe's integral fails its check, the ladder retries it, and the retry passes."""
+    return ScriptedLLM([INTEGRAL_ROUTE, retry_integral("meijerg"), finish_integral])
 
 
 def fault_runner(inner) -> FaultyRunner:  # noqa: ANN001
-    return FaultyRunner(inner, "sympy.diff", "2*x*sin(x)", calls={1})
+    return FaultyRunner(inner, "sympy.integrate", "pi**2 - 2", calls={1})
 
 
 _APP: QApplication | None = None  # keep a reference: a collected QApplication deletes every widget
@@ -74,7 +79,7 @@ def run_fault_window(rt, size: tuple[int, int]) -> MainWindow:  # noqa: ANN001
     win.resize(*size)
     win.show()
     pump(app, lambda: win.session_id is not None)
-    win.chat.input.setPlainText(QUESTION)
+    win.chat.input.setPlainText(INTEGRAL_Q)
     win.chat._submit()
     pump(app, lambda: not win.executor.is_busy
          and any(n.type == NodeType.FINAL for n in win.graph.nodes.values()))
@@ -85,7 +90,8 @@ def run_fault_window(rt, size: tuple[int, int]) -> MainWindow:  # noqa: ANN001
 
 
 def failed_diff(win: MainWindow):  # noqa: ANN201
-    return next(n for n in win.graph.nodes.values() if n.tool_name == "sympy.diff" and n.status.value == "failed")
+    return next(n for n in win.graph.nodes.values()
+                if n.tool_name == "sympy.integrate" and n.status.value == "failed")
 
 
 NODE_TABS = ["Code", "Execution Log", "Messages", "Environment", "Review"]

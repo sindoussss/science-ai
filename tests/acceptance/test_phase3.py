@@ -66,9 +66,11 @@ def assert_numbers_from_tools(rt, final_id):
 
 
 TTEST_GOAL = {"tool": "stats.ttest", "args": {"dataset": "trial.csv", "column": "score", "by": "group"}}
-FORMAL_GOAL = {"action": "formalize", "statement": "Compare mean score between groups A and B in trial.csv.",
+FORMAL_GOAL = {"action": "formalize", "recipe": "dataset_question",
+               "statement": "Compare mean score between groups A and B in trial.csv.",
                "problem_type": "data", "goal": TTEST_GOAL}
-FORMAL = {"action": "formalize", "statement": "Describe and test the trial.csv data.", "problem_type": "data"}
+FORMAL = {"action": "formalize", "recipe": "dataset_question",
+          "statement": "Describe and test the trial.csv data.", "problem_type": "data"}
 
 
 def finish(tool, status=None, text="Result: "):
@@ -331,7 +333,7 @@ def test_numbers_come_only_from_tools(make_rt, trial):
     prompts = "\n".join(c["user"] for c in llm.calls)
     assert "alpha 0.01 is not in the question; leave alpha out to use 0.05" in prompts
     assert 'the word "significant" needs the test result node in answer_nodes' in prompts
-    assert "answer_template must not contain digits" in prompts
+    assert "answer_template may not contain the number(s) 0.05" in prompts
     (test,) = nodes(rt, "stats.ttest")
     assert test.tool_inputs["alpha"] == 0.05 and not test.flags  # the configured alpha is a source
     assert_numbers_from_tools(rt, res.final_node)

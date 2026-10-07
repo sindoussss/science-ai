@@ -114,6 +114,7 @@ def load_builtin_tools() -> None:
         chem_tools,
         circuit_tools,
         data_tools,
+        formula_tools,
         linalg_tools,
         numeric_tools,
         ode_tools,

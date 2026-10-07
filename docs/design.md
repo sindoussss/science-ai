@@ -200,7 +200,7 @@ The offered checks ride in the next observation, so choosing a check costs no ex
 ### 3.6 "The model never produces a numeric result"
 
 Two code guards, no trust in prompting:
-1. The final answer is a template; `{{n5}}` is replaced by node `n5`'s `result`. Any number literal in the model's prose that is not in a referenced node's inputs or result rejects the action (one retry, then an error node).
+1. The final answer is a template; `{{n5}}` is replaced by node `n5`'s `result`. A number literal outside a placeholder is rejected unless the question itself contains it (so `y(2) = {{n5}}` passes and `the answer is 42` does not): one retry, then an error node. A recipe's answer sentence is written by code, so there is no model prose in it at all.
 2. `call_tool` args may contain numbers only if they come from the problem statement or an existing node; otherwise the action is rejected.
 
 ### 3.7 Reuse lookup (acceptance test 3)
@@ -208,6 +208,21 @@ Two code guards, no trust in prompting:
 `controller/lookup.py` runs first, with no model call: normalized problem text and its fingerprint are matched against `verified` nodes. On a hit, the verified node is linked into the session and answered from. If the problem needs translation to a formal form, the model may be called once to formalize it, but never to do the math; the lookup then matches on the fingerprint. Unverified matches come back as `hint` nodes with `needs_recheck=1`.
 
 Phase 4 widens this one step, and only for `chem`: a chemistry node is never `verified`, so for those the test is that every check that ran passed and none failed. Such a node is linked in and reused exactly as a verified one would be, and it stays a `hypothesis` there, so the answer built on it is not verified either (`controller/lookup.py: reusable_by_fingerprint`).
+
+### 3.7a Recipe library and router (2026-10-07)
+
+Formalization used to be open ended: the model wrote a free-form `goal` tool call and described the question's values in `givens`, which only accepted quantity objects (`{"value", "unit", "kind"}`). Live checks on qwen2.5, qwen3 8B and 14B, mistral-nemo and phi4 all failed at the same step, and the larger models failed harder. Two causes, both in the schema rather than the model:
+
+- A "given" that is not a number had nowhere to go. An integrand, the right-hand side of a differential equation, the curves of an area problem are expressions, and the validator answered `a quantity is {"value": number, "unit": "m/s"}` or `unknown kind`. No reply could pass.
+- An open-ended goal means the model picks the formula, so the answer was only as good as the model's memory of it.
+
+`controller/recipes.py` replaces it. A recipe is a fixed list of named slots (`number`, `unit`, `expr`, `equation`, `bound`, `var`, `choice`, `numbers`, `derivative`), the tool calls that answer the question, the problem type whose assumption checklist it carries, and two worked examples. The router is one model call whose `recipe` field is an enum: the nine recipes, `dataset_question` and `molecule_question` (which hand the question to the Phase 3 and Phase 4 paths unchanged), and `none`. Code coerces each slot ("20" and 20 alike, "1,000", "3/4", `-2*y` or `-2*y(x)`, "20 m/s" split across a number and its unit slot), re-prompts only on a real type error, and asks the *user* when a required slot is a value the question never contained. `scripts/live_check.py` scores a planning-call budget per problem, so "one model call for an easy question" is measured, not asserted.
+
+Four closed-form solvers were added for the recipes, each with a checker that reaches the same number another way (`tools/formula_tools.py`): `phys.projectile_range` (checked by integrating the trajectory with RK4 and bisecting the ground crossing), `phys.photon_energy` (checked against pint's own constant table rather than SciPy's CODATA), `phys.rc_discharge` (checked by solving `dV/dt = -V/RC` numerically) and `calc.area_between` (crossings, then the symbolic integral of each `|f-g|` piece, checked by quadrature on a 4001-point grid, and refusing an area that is negative or zero). `units.check_target` is a `required`, `must_pass` plan on every solver that takes a `to_unit`: it fails a wrong dimension (a photon energy reported as `1 / m J`) and a right-dimension-wrong-unit result (96560.64 m/h for a question asking m/s) separately, because both read as the answer. `ode.check_residual` is now `must_pass`, so a solution that does not satisfy its own initial condition cannot be verified.
+
+Display: values show to four significant figures, the unit is written exactly once (by the result, never by the sentence), and `units.convert` reports the unit the question asked for rather than pint's spelling of it.
+
+Not changed: numbers still only come from tools, answers are still templates filled from node results, every tool result still gets an independent check, and a chemistry node is still always a hypothesis. A recipe's slots are the problem's sources, so a slot holding a number the question never had still flags every result built on it.
 
 ### 3.8 Failure ladder (in `verify/ladder.py`)
 

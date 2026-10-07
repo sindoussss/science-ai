@@ -6,6 +6,7 @@ dependent always points at the exact value it consumed.
 """
 from __future__ import annotations
 
+import math
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -137,6 +138,24 @@ CHEM_KINDS = ("molecule", "descriptors", "estimate", "druglike", "neighbours", "
               "clusters", "ranking", "literature")
 
 
+# What a reader sees. The stored value keeps full precision; this is the display only.
+# Four significant figures is what a worked answer is quoted to, and it is what stops
+# "35.32400580358996 m" reading as a measurement nobody made.
+SIG_FIGS = 4
+
+
+def show_number(value: Any) -> str:
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    if not math.isfinite(v):
+        return str(v)
+    if v == int(v) and abs(v) < 1e16:
+        return str(int(v))
+    return f"{v:.{SIG_FIGS}g}"
+
+
 def result_to_text(result: dict[str, Any]) -> str:
     kind = result.get("kind")
     value = result.get("value")
@@ -148,11 +167,13 @@ def result_to_text(result: dict[str, Any]) -> str:
         else:
             text = ", ".join(result_to_text(v) for v in value)
     elif kind == "quantity":
-        text = f"{float(value):.10g} {result.get('unit') or ''}".rstrip()
+        # the unit is written once, here: a caller that adds it again is what produced
+        # "35.3 m meters", so answer sentences never name the unit themselves
+        text = f"{show_number(value)} {result.get('unit') or ''}".rstrip()
     elif kind == "series":
         t = result.get("t") or [0.0]
-        finals = ", ".join(f"{f} = {float(v):.10g}" for f, v in zip(result.get("funcs", []), value or []))
-        text = f"{finals} at {result.get('var', 't')} = {float(t[-1]):.10g}"
+        finals = ", ".join(f"{f} = {show_number(v)}" for f, v in zip(result.get("funcs", []), value or []))
+        text = f"{finals} at {result.get('var', 't')} = {show_number(t[-1])}"
     elif kind == "plotspec":
         if value.get("version") == 2:
             from sciai.graph.plotspec import summary
@@ -170,6 +191,8 @@ def result_to_text(result: dict[str, Any]) -> str:
 
         text = {"dataset": report.dataset_text, "table": report.table_text, "stats": report.stats_text,
                 "adjusted": report.adjusted_text}[kind](result)
+    elif kind == "number":
+        text = show_number(value)
     else:
         text = str(value)
     return f"{text} {units}" if units else text
