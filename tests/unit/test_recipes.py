@@ -37,9 +37,19 @@ def test_the_router_enum_is_the_whole_of_the_model_s_planning_freedom():
 
 
 def test_the_nine_recipes_yeri_asked_for_exist():
-    assert set(R.RECIPES) == {
+    assert set(R.RECIPES) - set(R.CHEM_RECIPES) == {
         "unit_convert", "definite_integral", "solve_equation", "area_between_curves", "ode_ivp",
         "projectile_range", "photon_energy", "rc_discharge", "series_parallel_current"}
+
+
+def test_the_five_chem_recipes_yeri_asked_for_exist():
+    """The chem run of 2026-10-07: molecule questions went to physics recipes, so what a
+    molecule question may become is a closed list too."""
+    assert R.CHEM_RECIPES == ("chem_identity", "chem_descriptors", "chem_logp", "chem_druglike",
+                              "chem_similarity")
+    assert set(R.CHEM_RECIPES) <= set(R.RECIPES)
+    for name in R.CHEM_RECIPES:
+        assert R.RECIPES[name].problem_type == "chem"   # no modelling checklist to tick
 
 
 def test_every_recipe_has_two_examples_that_actually_fill_it():

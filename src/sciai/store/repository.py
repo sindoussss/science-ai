@@ -364,6 +364,52 @@ class Repository:
             )
             return cur.rowcount
 
+    UNSOURCED_FLAG = "unsourced_givens"
+    PURGE_KEY = "purged_unsourced_slots"
+
+    def purge_unsourced(self) -> int:
+        """One-time cleanup: delete every node from a run whose slots were not in the question.
+
+        The 2026-10-07 chem run answered molecule questions from a physics recipe's worked
+        example, and those answers went into the store, where the repeat question then reused
+        one. A value the question never contained cannot be the basis of anything, so the whole
+        of such a run goes: its problem node, everything derived from it, and the answers.
+        Runs since the fix cannot produce one, because the plan is refused before any tool runs.
+
+        Returns the number of nodes deleted. It runs once per store and records that in meta.
+        """
+        with self.db.tx() as c:
+            done = c.execute("SELECT value FROM meta WHERE key=?", (self.PURGE_KEY,)).fetchone()
+            if done is not None:
+                return 0
+        roots = [node_from_row(r) for r in self.db.query(
+            f"SELECT {_NODE_COLS} FROM nodes WHERE type='problem' AND flags LIKE ?",
+            (f"%{self.UNSOURCED_FLAG}%",))]
+        doomed: list[str] = []
+        for root in roots:
+            if not any(str(f).startswith(self.UNSOURCED_FLAG) for f in root.flags):
+                continue
+            doomed += [root.id, *self.dependents_transitive(root.id)]
+        for node_id in dict.fromkeys(doomed):
+            self.delete_node(node_id)
+        with self.db.tx() as c:
+            c.execute("INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
+                      (self.PURGE_KEY, str(len(set(doomed)))))
+        return len(set(doomed))
+
+    def unsourced_root(self, node_id: str) -> bool:
+        """True when this node descends from a problem whose slots were not in the question.
+
+        Belt and braces in front of reuse: such a node should not exist, and if an old store
+        still holds one it is never reused or offered as an answer.
+        """
+        for nid in [node_id, *self.ancestors(node_id)]:
+            node = self.get_node(nid)
+            if node is not None and node.type == NodeType.PROBLEM and \
+                    any(str(f).startswith(self.UNSOURCED_FLAG) for f in node.flags):
+                return True
+        return False
+
     # ----------------------------------------------------------------- history
     def log_status(self, node_id: str, old: str | None, new: str, reason: str, caused_by: str | None) -> None:
         with self.db.tx() as c:

@@ -27,8 +27,9 @@ whose own tools, declines and hypothesis rules are unchanged by any of this.
 from __future__ import annotations
 
 import math
+import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Callable
 
 from sciai.tools.parsing import ParseError, parse, parse_relation
@@ -50,6 +51,11 @@ _LABELLED = re.compile(r"^\s*(?:d\s*[A-Za-z]\w*\s*/\s*d\s*[A-Za-z]\w*|[A-Za-z]\w
 OFFSET_UNITS = {"degc", "celsius", "degree_celsius", "degf", "fahrenheit", "degree_fahrenheit"}
 
 MAX_RESISTORS = 8
+MAX_STRUCTURE = 1000
+MAX_LIBRARY_MEMBERS = 50
+# A structure is written in SMILES, InChI or a molblock. Letters, digits and the punctuation
+# those three use; no spaces, except that a molblock is multi-line.
+STRUCTURE_TEXT = re.compile(r"^[A-Za-z0-9@+\-\[\]\(\)=#$%/\\.,*:;{}|~^!&<>?'\s]+$")
 
 
 class SlotError(ValueError):
@@ -212,10 +218,75 @@ def _numbers(slot: Slot, raw: Any) -> list[float]:
     return [_number(slot, item) for item in items]
 
 
+def _smiles(slot: Slot, raw: Any) -> str:
+    """A structure, exactly as the question wrote it. Chemistry is the tool's job: this only
+    refuses something that cannot be a structure at all."""
+    text = str(raw).strip()
+    if not text:
+        raise SlotError(f"{slot.name} is empty; it holds {slot.about}")
+    if len(text) > MAX_STRUCTURE:
+        raise SlotError(f"{slot.name} is too long to be one structure ({slot.about})")
+    if not STRUCTURE_TEXT.match(text):
+        raise SlotError(f"{slot.name} must be the structure as the question writes it -- SMILES, "
+                        f"InChI or a molblock ({slot.about})")
+    return text
+
+
+def _library(slot: Slot, raw: Any) -> dict[str, Any]:
+    """The library as the question gives it: JSON with a members list of name and structure.
+
+    The question carries it verbatim (the model is told to copy it), so this parses rather than
+    interprets. A library the model composed from memory fails provenance, not this.
+    """
+    if isinstance(raw, dict):
+        data = raw
+    else:
+        text = str(raw).strip()
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise SlotError(f"{slot.name} must be the library JSON copied from the question "
+                            f'({{"members":[{{"name":..,"structure":..}}]}}): {exc.msg}') from None
+    members = data.get("members") if isinstance(data, dict) else None
+    if not isinstance(members, list) or not members:
+        raise SlotError(f"{slot.name} needs a non-empty \"members\" list ({slot.about})")
+    if len(members) > MAX_LIBRARY_MEMBERS:
+        raise SlotError(f"{slot.name} has more than {MAX_LIBRARY_MEMBERS} members ({slot.about})")
+    out = []
+    for i, m in enumerate(members, start=1):
+        if not isinstance(m, dict) or not str(m.get("structure") or "").strip():
+            raise SlotError(f"{slot.name} member {i} needs a \"structure\" ({slot.about})")
+        out.append({"name": str(m.get("name") or f"member{i}").strip()[:200],
+                    "structure": str(m["structure"]).strip()})
+    name = str(data.get("name") or "").strip()[:200] if isinstance(data, dict) else ""
+    return {"members": out, **({"name": name} if name else {})}
+
+
 COERCE: dict[str, Callable[[Slot, Any], Any]] = {
     "number": _number, "unit": _unit, "expr": _expr, "equation": _equation, "bound": _bound,
     "var": _var, "choice": _choice, "numbers": _numbers, "derivative": _derivative,
+    "smiles": _smiles, "library": _library,
 }
+
+# How a slot's value is traced back to the question. The rule (Yeri, 2026-10-07): a value the
+# question does not contain was invented, and nothing may be computed from it -- not even when
+# it matches one of the worked examples in the prompt, which is exactly how a molecule question
+# came back answered with the photon-energy example's 3.9728917e-19 J.
+#
+# "numbers": every number in the value must appear in the question.
+# "text": the value's text must appear in the question (whitespace ignored).
+# "none": nothing to trace. A unit, a variable name and a choice are not computed values, and a
+#         question says "in metres per second" rather than "m/s" anyway.
+PROVENANCE: dict[str, str] = {
+    "number": "numbers", "bound": "numbers", "numbers": "numbers", "expr": "numbers",
+    "equation": "numbers", "derivative": "numbers",
+    "smiles": "text", "library": "text",
+    "unit": "none", "var": "none", "choice": "none",
+}
+
+
+def _squeeze(text: str) -> str:
+    return re.sub(r"\s+", "", text)
 
 
 # -------------------------------------------------------------------- recipes
@@ -229,6 +300,8 @@ class Plan:
     # have to be in the question: a default is a constant this code chose, not a claim about
     # the problem, so it is a source rather than something to source.
     supplied: frozenset[str] = frozenset()
+    # Slots whose value the question does not contain. A plan with any of these is never run.
+    unsourced: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -300,11 +373,42 @@ class Recipe:
             out.setdefault(unit_slot.name, m.group(2).strip())
         return out
 
-    def plan(self, raw: dict[str, Any]) -> Plan:
+    def plan(self, raw: dict[str, Any], question: str = "") -> Plan:
         values = self.fill(raw)
         supplied = frozenset(self._split_units(
             {k: v for k, v in (raw or {}).items() if v not in (None, "")})) & set(values)
-        return Plan(self.name, self.steps, self.answer, values, frozenset(supplied))
+        plan = Plan(self.name, self.steps, self.answer, values, frozenset(supplied))
+        return plan if not question else replace(plan, unsourced=self.unsourced(plan, question))
+
+    def unsourced(self, plan: "Plan", question: str) -> tuple[str, ...]:
+        """The slots the model filled with something the question does not contain.
+
+        Only the slots the model supplied are traced: a default is a constant this code chose.
+        A value that fails this is not a value the question gave, so nothing may be computed
+        from it -- the controller refuses the plan rather than flagging it, which is the whole
+        of the fix for a molecule question answered with the photon-energy example's numbers.
+        """
+        from sciai.controller.provenance import numbers_asked, numbers_in
+
+        asked = numbers_asked(question)
+        squeezed = _squeeze(question)
+        bad: list[str] = []
+        for slot in self.slots:
+            if slot.name not in plan.values or slot.name not in plan.supplied:
+                continue
+            rule = PROVENANCE.get(slot.kind, "numbers")
+            value = plan.values[slot.name]
+            if rule == "none":
+                continue
+            if rule == "text":
+                texts = ([m["structure"] for m in value.get("members", [])]
+                         if isinstance(value, dict) else [str(value)])
+                if any(_squeeze(x) and _squeeze(x) not in squeezed for x in texts):
+                    bad.append(slot.name)
+                continue
+            if not numbers_in(value) <= asked:
+                bad.append(slot.name)
+        return tuple(bad)
 
     def statement(self, values: Values) -> str:
         """The problem as code reads it, for the root node the user confirms.
@@ -482,6 +586,62 @@ def _current_answer(values: Values, handles: list[str]) -> str:
              else "in each resistor (the series resistors carry the whole current "
                   "from the source)")
     return f"The current {where} is {placeholder(handles[0])}."
+
+
+# ---------------------------------------------------------------------- chem
+# Chemistry through recipes too, for the same reason as the rest: the live run showed the model
+# routing molecule questions to physics recipes and copying the example slots, so what a
+# molecule question may become is now a closed list as well. Nothing about the Phase 4 rules
+# changes -- every chem node is a hypothesis, each tool's check is required, and a request no
+# tool serves is still declined before any of this.
+def _structure(values: Values) -> dict[str, Any]:
+    args: dict[str, Any] = {"structure": values["structure"]}
+    if values.get("format"):
+        args["format"] = values["format"]
+    return args
+
+
+def _druglike_step(values: Values, prior: list[dict[str, Any]]) -> tuple[str, dict[str, Any], str] | None:
+    """The filters read what the earlier steps computed, never the question.
+
+    Lipinski needs a logP and the descriptor table does not carry one, so the recipe computes
+    it first: descriptors, then logP, then the verdict over both.
+    """
+    del values
+    if len(prior) < 2 or prior[0].get("kind") != "descriptors":
+        return None
+    args: dict[str, Any] = {"descriptors": prior[0]}
+    logp = prior[1].get("value")
+    if isinstance(logp, (int, float)):
+        args["logp"] = float(logp)
+    return "chem.druglike", args, "the drug-likeness verdict"
+
+
+def _similar_args(values: Values) -> dict[str, Any]:
+    library = values["library"]
+    return {"structure": values["structure"],
+            "library": {**library,
+                        "members": [{"name": m["name"], "structure": m["structure"]}
+                                    for m in library["members"]]}}
+
+
+def _example(question: str, **slots: str) -> str:
+    """One worked example line. The slots are JSON-encoded, so a nested library keeps its
+    quotes and a model copying the line copies something that parses."""
+    return f'"{question}" -> ' + json.dumps(slots, separators=(",", ":"))
+
+
+ASPIRIN_EXAMPLE = "CC(=O)Oc1ccccc1C(=O)O"
+PARACETAMOL_EXAMPLE = "CC(=O)Nc1ccc(O)cc1"
+LIBRARY_EXAMPLE = json.dumps(
+    {"members": [{"name": "paracetamol", "structure": PARACETAMOL_EXAMPLE}]},
+    separators=(",", ":"))
+
+
+CHEM_FORMAT = Slot("format", "choice", "how the structure is written", required=False,
+                   choices=("smiles", "molblock", "inchi"))
+CHEM_STRUCTURE = Slot("structure", "smiles",
+                      "the structure, copied from the question exactly as it is written")
 
 
 # ------------------------------------------------------------------ the library
@@ -663,6 +823,79 @@ _add(Recipe(
 ))
 
 # Router outcomes that are not recipes.
+_add(Recipe(
+    name="chem_identity",
+    about="standardize one structure and give its formula, canonical SMILES and InChIKey",
+    slots=(CHEM_STRUCTURE, CHEM_FORMAT),
+    steps=(_one("chem.parse", "the structure", _structure),),
+    answer=_say("It is {h}."),
+    examples=(_example(f"What is the formula of {ASPIRIN_EXAMPLE}?", structure=ASPIRIN_EXAMPLE),
+              _example(f"Which InChIKey does {PARACETAMOL_EXAMPLE} standardize to?",
+                       structure=PARACETAMOL_EXAMPLE)),
+    problem_type="chem",
+))
+
+_add(Recipe(
+    name="chem_descriptors",
+    about="the molecular weight, mass, TPSA, rings, HBD, HBA and rotatable bonds of one structure",
+    slots=(CHEM_STRUCTURE, CHEM_FORMAT),
+    steps=(_one("chem.descriptors", "the descriptors", _structure),),
+    answer=_say("The descriptors are {h}."),
+    examples=(_example(f"What are the molecular weight and TPSA of {ASPIRIN_EXAMPLE}?",
+                       structure=ASPIRIN_EXAMPLE),
+              _example(f"How many rotatable bonds does {PARACETAMOL_EXAMPLE} have?",
+                       structure=PARACETAMOL_EXAMPLE)),
+    problem_type="chem",
+))
+
+_add(Recipe(
+    name="chem_logp",
+    about="the Crippen logP of one structure, as a single-method estimate",
+    slots=(CHEM_STRUCTURE, CHEM_FORMAT),
+    steps=(_one("chem.logp", "the logP estimate", _structure),),
+    answer=_say("The estimate is {h}."),
+    examples=(_example(f"What is the logP of {ASPIRIN_EXAMPLE}?", structure=ASPIRIN_EXAMPLE),
+              _example(f"How lipophilic is {PARACETAMOL_EXAMPLE}?",
+                       structure=PARACETAMOL_EXAMPLE)),
+    problem_type="chem",
+))
+
+_add(Recipe(
+    name="chem_druglike",
+    about="whether one structure passes the Lipinski and Veber filters, and what fails",
+    slots=(CHEM_STRUCTURE, CHEM_FORMAT),
+    steps=(_one("chem.descriptors", "the descriptors", _structure),
+           _one("chem.logp", "the logP estimate", _structure), _druglike_step),
+    answer=_say("{h}"),
+    examples=(_example(f"Does {ASPIRIN_EXAMPLE} pass the Lipinski and Veber filters?",
+                       structure=ASPIRIN_EXAMPLE),
+              _example(f"Is {PARACETAMOL_EXAMPLE} drug-like?",
+                       structure=PARACETAMOL_EXAMPLE)),
+    problem_type="chem",
+))
+
+_add(Recipe(
+    name="chem_similarity",
+    about="which members of a library given in the question are nearest to one structure",
+    slots=(CHEM_STRUCTURE,
+           Slot("library", "library",
+                "the library JSON copied from the question, with a members list of name and "
+                "structure")),
+    steps=(_one("chem.similar", "the nearest members", _similar_args),),
+    answer=_say("The nearest members are {h}."),
+    examples=(_example(f"Which of this library is nearest {ASPIRIN_EXAMPLE}? "
+                       f"{LIBRARY_EXAMPLE}",
+                       structure=ASPIRIN_EXAMPLE, library=LIBRARY_EXAMPLE),
+              _example(f"Nearest neighbour of {PARACETAMOL_EXAMPLE} in {LIBRARY_EXAMPLE}?",
+                       structure=PARACETAMOL_EXAMPLE, library=LIBRARY_EXAMPLE)),
+    problem_type="chem",
+))
+
+# The recipes that answer a molecule question. A question about a molecule may only become one
+# of these, the molecule_question route (for what the five do not cover) or a decline.
+CHEM_RECIPES: tuple[str, ...] = ("chem_identity", "chem_descriptors", "chem_logp",
+                                 "chem_druglike", "chem_similarity")
+
 NONE = "none"
 DATASET = "dataset_question"
 MOLECULE = "molecule_question"
@@ -693,5 +926,5 @@ def out_of_scope(question: str) -> str:
             "not fit any of them. These are the ones I have:\n" + supported())
 
 
-__all__ = ["DATASET", "DELEGATED", "MOLECULE", "MissingSlots", "NONE", "Plan", "RECIPES",
+__all__ = ["CHEM_RECIPES", "DATASET", "DELEGATED", "PROVENANCE", "MOLECULE", "MissingSlots", "NONE", "Plan", "RECIPES",
            "ROUTES", "Recipe", "Slot", "SlotError", "num_text", "out_of_scope", "placeholder", "prompt_block", "supported"]

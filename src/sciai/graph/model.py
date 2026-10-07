@@ -7,6 +7,7 @@ dependent always points at the exact value it consumed.
 from __future__ import annotations
 
 import math
+from decimal import ROUND_HALF_UP, Decimal
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -142,18 +143,54 @@ CHEM_KINDS = ("molecule", "descriptors", "estimate", "druglike", "neighbours", "
 # Four significant figures is what a worked answer is quoted to, and it is what stops
 # "35.32400580358996 m" reading as a measurement nobody made.
 SIG_FIGS = 4
+# A temperature is written to this many decimals instead of four significant figures: 25 degC
+# is exactly 298.15 K, and "298.1 K" is a worse answer than the question's own precision.
+TEMPERATURE_DECIMALS = 2
+TEMPERATURE_UNITS = frozenset({
+    "k", "kelvin", "degk", "degree_kelvin", "degc", "celsius", "degree_celsius",
+    "degf", "fahrenheit", "degree_fahrenheit", "degr", "rankine", "degree_rankine",
+    "°c", "°f", "°k",
+})
 
 
-def show_number(value: Any) -> str:
+def _round_half_up(v: float, digits: int) -> float:
+    """Round away from zero on a tie, as arithmetic is taught. Python's own round() is
+    half-to-even, which turned 298.15 into 298.1."""
+    q = Decimal(1).scaleb(-digits)
+    return float(Decimal(repr(v)).quantize(q, rounding=ROUND_HALF_UP))
+
+
+def show_number(value: Any, decimals: int | None = None) -> str:
+    """A value as the user reads it: four significant figures, rounded half up.
+
+    ``decimals`` fixes the number of decimal places instead, for a quantity whose unit needs
+    them (a temperature). Trailing zeros are dropped, so 25 degC stays "25".
+    """
     try:
         v = float(value)
     except (TypeError, ValueError):
         return str(value)
     if not math.isfinite(v):
         return str(v)
+    if decimals is not None and abs(v) >= 10 ** -decimals:
+        v = _round_half_up(v, decimals)
+        if v == int(v):
+            return str(int(v))
+        return f"{v:.{decimals}f}".rstrip("0").rstrip(".")
     if v == int(v) and abs(v) < 1e16:
         return str(int(v))
+    exponent = math.floor(math.log10(abs(v)))
+    if -5 < exponent < SIG_FIGS + 2:   # the range %g writes without an exponent
+        v = _round_half_up(v, SIG_FIGS - 1 - exponent)
+        if v == int(v):
+            return str(int(v))
     return f"{v:.{SIG_FIGS}g}"
+
+
+def temperature_decimals(unit: Any) -> int | None:
+    """``TEMPERATURE_DECIMALS`` when the unit is a temperature, else None."""
+    text = str(unit or "").strip().lower().replace(" ", "_")
+    return TEMPERATURE_DECIMALS if text in TEMPERATURE_UNITS else None
 
 
 def result_to_text(result: dict[str, Any]) -> str:
@@ -169,7 +206,8 @@ def result_to_text(result: dict[str, Any]) -> str:
     elif kind == "quantity":
         # the unit is written once, here: a caller that adds it again is what produced
         # "35.3 m meters", so answer sentences never name the unit themselves
-        text = f"{show_number(value)} {result.get('unit') or ''}".rstrip()
+        unit = result.get("unit") or ""
+        text = f"{show_number(value, temperature_decimals(unit))} {unit}".rstrip()
     elif kind == "series":
         t = result.get("t") or [0.0]
         finals = ", ".join(f"{f} = {show_number(v)}" for f, v in zip(result.get("funcs", []), value or []))
@@ -192,7 +230,8 @@ def result_to_text(result: dict[str, Any]) -> str:
         text = {"dataset": report.dataset_text, "table": report.table_text, "stats": report.stats_text,
                 "adjusted": report.adjusted_text}[kind](result)
     elif kind == "number":
-        text = show_number(value)
+        # a converted temperature arrives as a plain number whose unit is in ``units``
+        text = show_number(value, temperature_decimals(units))
     else:
         text = str(value)
     return f"{text} {units}" if units else text

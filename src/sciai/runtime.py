@@ -25,6 +25,7 @@ class Runtime:
     llm: LLM
     controller: Controller
     flagged_on_start: int
+    purged_on_start: int = 0
 
     def import_file(self, path: str | Path, name: str | None = None) -> ImportResult:
         return import_file(path, self.repo, self.runner, self.cfg.data, name)
@@ -46,8 +47,9 @@ def build_runtime(cfg: Config, *, db_path: str | Path | None = None, llm: LLM | 
     db = Database(db_path if db_path is not None else cfg.db_path)
     repo = Repository(db)
     flagged = repo.flag_unverified()  # unverified results from earlier runs become hints
+    purged = repo.purge_unsourced()   # once: delete runs whose slots were not in the question
     engine = GraphEngine(repo, bus)
     runner = runner or SandboxRunner(timeout=cfg.tools.timeout)
     llm = llm or OllamaClient(cfg.model)
     controller = Controller(engine, runner, llm, cfg, confirm_root)
-    return Runtime(cfg, db, repo, engine, runner, llm, controller, flagged)
+    return Runtime(cfg, db, repo, engine, runner, llm, controller, flagged, purged)

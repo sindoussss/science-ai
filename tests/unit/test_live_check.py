@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from sciai.graph.model import NodeType
 from sciai.llm.actions import action_schema
 from tests.fakes.fake_llm import ScriptedLLM
 
@@ -112,6 +113,12 @@ def test_trace_is_off_unless_asked_for(lc):
     assert lc.parse_args(["--model", "m", "--trace"]).trace is True
 
 
+def test_a_fresh_store_is_the_default(lc):
+    """Yeri's item 3: a suite must not inherit, or leave behind, a stored answer."""
+    assert lc.parse_args(["--model", "m"]).fresh_store is True
+    assert lc.parse_args(["--model", "m", "--no-fresh-store"]).fresh_store is False
+
+
 def test_retry_markers_match_the_controller(lc):
     from sciai.controller import loop
 
@@ -137,6 +144,8 @@ def test_six_problems_of_the_requested_kinds(lc):
     # Every one of them is a recipe, so each should cost the single routing call.
     assert [p.max_calls for p in lc.PROBLEMS] == [1, 1, 1, 1, 1, 0]
     assert [p.max_calls for p in lc.PHYSICS_PROBLEMS] == [1, 1, 1, 1, 1, 0]
+    # The five chemistry questions are recipes too; the two declines and the repeat cost nothing.
+    assert [p.max_calls for p in lc.CHEM_PROBLEMS] == [1, 1, 1, 1, 1, 0, 0, 0]
     args = lc.parse_args(["--model", "llama3.1:8b", "--no-think"])
     assert (args.model, args.think) == ("llama3.1:8b", False)
 
@@ -188,6 +197,40 @@ def test_chem_suite_declines_cost_no_model_call(lc, make_rt):
         row = lc.run_problem(make_rt(llm), llm, problem)
         assert row.passed, row
         assert (row.status, row.calls, row.retries) == ("declined", 0, 0)
+
+
+def test_the_whole_chem_suite_answers_through_recipes_in_one_call_each(lc, make_rt):
+    """Yeri's item 4: the five chemistry questions are recipes now, so each costs the single
+    routing call, and each answer is still a hypothesis. This is the suite that came back 2/8
+    with physics answers in the chemistry rows."""
+    problems = {p.key: p for p in lc.CHEM_PROBLEMS}
+    routes = {
+        "identity": ("chem_identity", {"structure": lc.ASPIRIN}),
+        "descriptors": ("chem_descriptors", {"structure": lc.CAFFEINE}),
+        "logp": ("chem_logp", {"structure": lc.IBUPROFEN}),
+        "druglike": ("chem_druglike", {"structure": lc.PARACETAMOL}),
+        "similarity": ("chem_similarity", {"structure": lc.ASPIRIN, "library": lc.CHEM_LIBRARY}),
+    }
+    for key, (recipe, slots) in routes.items():
+        llm = lc.CountingLLM(ScriptedLLM([{"action": "formalize", "recipe": recipe, "slots": slots}]))
+        row = lc.run_problem(make_rt(llm), llm, problems[key])
+        assert row.passed, f"{key}: {row.why}"
+        assert (row.status, row.calls, row.retries) == ("answered", 1, 0), key
+
+
+def test_a_physics_recipe_cannot_answer_a_molecule_question(lc, make_rt):
+    """Yeri's items 1 and 2, as the live check scores them. The model is given exactly the reply
+    the real run produced -- photon_energy with the worked example's 500 nm -- and the suite must
+    record an out-of-scope answer, not caffeine's molecular weight reported as 3.97e-19 J."""
+    wrong = {"action": "formalize", "recipe": "photon_energy",
+             "slots": {"wavelength": "500", "wavelength_unit": "nm", "to_unit": "J"}}
+    llm = lc.CountingLLM(ScriptedLLM([wrong, wrong]))
+    rt = make_rt(llm)
+    row = lc.run_problem(rt, llm, [p for p in lc.CHEM_PROBLEMS if p.key == "descriptors"][0])
+    assert not row.passed and row.status == "out_of_scope", row
+    computed = [n for n, _ in rt.repo.session_view(rt.engine.session_id or "")
+                if n.type is NodeType.TOOL_RESULT]
+    assert not computed, "an unsourced plan reached the tools"
 
 
 def test_chem_identity_answers_in_one_call_and_stays_a_hypothesis(lc, make_rt):

@@ -176,7 +176,9 @@ python scripts\live_check.py --model qwen2.5:7b-instruct-q4_K_M --suite chem
 
 It runs six fixed problems (a definite integral, an equation, a unit conversion, an ODE, one hard
 multi-step problem that small models usually fail, and a repeat of the first to test knowledge
-reuse) on a fresh temporary store, so your own knowledge store is not touched. It prints a table
+reuse) on a fresh temporary store, so your own knowledge store is not touched and a suite cannot
+inherit or leave behind a stored answer. `--no-fresh-store` uses the store in your config instead,
+which is how you reproduce an answer reused from an earlier run. It prints a table
 with pass/fail, JSON retries, the failure-ladder stage reached, seconds and model calls, and saves
 it to `results\<model>.md` (a `:` or `/` in the tag becomes `-`, since Windows file names can't
 hold them). If Ollama isn't running or the model isn't pulled, it says so and exits with code 2.
@@ -200,9 +202,10 @@ that is the only place the prompt, the schema and the reply sit side by side.
 they collapse to one InChIKey (if they do not, nothing else the suite says about chemistry means
 anything). It then asks eight questions: identity, descriptors against reference values, a logP, a
 drug-likeness verdict, a similarity ranking over a three-member library, two requests nothing can
-serve (a synthesis route and a dose, which must be declined with no tool run at all) and a repeat
-to test reuse. A chemistry answer passes only if it comes back a hypothesis; an answer that comes
-back verified is a failure. It saves `results\<model>-chem.md`.
+serve (a synthesis route and a dose, which must be declined with no model call at all) and a repeat
+to test reuse. The five chemistry questions are recipes, so each costs the one routing call. A
+chemistry answer passes only if it comes back a hypothesis; an answer that comes back verified is a
+failure. It saves `results\<model>-chem.md`.
 
 ## Linux / macOS
 
@@ -242,8 +245,18 @@ pytest
 
 `unit_convert` (including degC and degF), `definite_integral`, `solve_equation`,
 `area_between_curves`, `ode_ivp`, `projectile_range`, `photon_energy`, `rc_discharge`,
-`series_parallel_current`. Each one has named slots -- numbers, units, expressions, variables --
-and `src/sciai/controller/recipes.py` holds them, their two worked examples apiece, and the tool
+`series_parallel_current`, `chem_identity`, `chem_descriptors`, `chem_logp`, `chem_druglike`,
+`chem_similarity`. Each one has named slots -- numbers, units, expressions, variables, structures
+-- and `src/sciai/controller/recipes.py` holds them, their two worked examples apiece, and the tool
 calls each one makes. A number slot takes only the number; its unit lives in the matching
 `*_unit` slot, and an expression slot takes an expression, which is what the old quantity-only
-`givens` could not hold.
+`givens` could not hold. A chemistry recipe answers with a hypothesis, never a verified node.
+
+Every value the model writes into a slot has to come from the question. A number slot is sourced
+only if each of its numbers appears in the question (digits or words, so "x squared" sources the 2
+in `x**2`), and a structure or library member has to appear verbatim; units and variable names
+carry no data and are exempt. A slot that fails gets one re-prompt naming it, and then the question
+is answered out of scope -- nothing is computed from it, nothing is stored, and nothing stored that
+way is ever reused. This is why a question about a molecule cannot be answered by the photon-energy
+example's number. A question that mentions a molecule, a chemistry term or a SMILES structure is
+also barred in code from reaching a physics or maths recipe at all.

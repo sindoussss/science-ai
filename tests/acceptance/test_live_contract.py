@@ -94,18 +94,43 @@ ANSWERABLE = [(n, r) for n, r in RECORDS if r.get("expected")]
 @pytest.mark.parametrize("name,record", ANSWERABLE, ids=[n for n, _ in ANSWERABLE])
 def test_the_controller_answers_a_recorded_reply_in_one_model_call(name, record, make_rt):
     """End to end on the recorded text itself: the reply is replayed verbatim, and the question
-    is answered, verified, with the value the suite expects and the single routing call."""
+    is answered with the value the suite expects and the single routing call. A chemistry
+    answer is a hypothesis and must never come back verified, which is Phase 4's whole rule."""
     rt = make_rt(ScriptedLLM([record["reply"]]))
     rt.engine.new_session(name)
     res = rt.controller.run(record["question"])
 
     assert res.status == "answered", res.detail
     assert res.llm_calls == 1
-    assert res.verified
+    assert res.verified is not record.get("hypothesis", False)
     values = _values(rt, res)
+    tol = float(record.get("rel_tol") or 1e-4)
     for expected in record["expected"]:
-        assert any(abs(v - expected) <= 1e-4 * max(abs(expected), 1e-12) for v in values), \
+        assert any(abs(v - expected) <= tol * max(abs(expected), 1e-12) for v in values), \
             f"expected {expected}, got {values}"
+
+
+REFUSED = [(n, r) for n, r in RECORDS if r.get("refused")]
+
+
+@pytest.mark.parametrize("name,record", REFUSED, ids=[n for n, _ in REFUSED])
+def test_a_reply_whose_slots_are_not_in_the_question_is_refused(name, record, make_rt):
+    """The chem run's wrong answers, as permanent tests. A molecule question answered
+    "3.9728917e-19" was the photon-energy example's own value: the router had picked that
+    recipe and the model copied its worked example. Both replies (the first and the one retry)
+    are the same, because that is what the model did -- and nothing may be computed from them.
+    """
+    rt = make_rt(ScriptedLLM([record["reply"], record["reply"]]))
+    rt.engine.new_session(name)
+    res = rt.controller.run(record["question"])
+
+    assert res.status == "out_of_scope", f"{res.status}: {res.detail or res.answer}"
+    assert not nodes_of_type(rt, "tool_result"), "a tool ran on a value the question never had"
+
+
+def nodes_of_type(rt, type_name: str) -> list[Any]:
+    return [n for n, _ in rt.repo.session_view(rt.engine.session_id)
+            if n.type.value == type_name]
 
 
 def _values(rt, res) -> list[float]:
@@ -116,17 +141,18 @@ def _values(rt, res) -> list[float]:
     return out
 
 
-def _numbers(result: Any) -> list[float]:
-    if not isinstance(result, dict):
+def _numbers(value: Any) -> list[float]:
+    """Every number anywhere in a stored result, so one helper covers a quantity, a descriptor
+    table and a neighbour list alike."""
+    if isinstance(value, bool):
         return []
-    out = []
-    for key in ("value", "si_value", "numeric"):
-        v = result.get(key)
-        if isinstance(v, (int, float)) and not isinstance(v, bool):
-            out.append(float(v))
-        elif isinstance(v, list):
-            out += [x for item in v for x in _numbers(item if isinstance(item, dict) else {"value": item})]
-    return out
+    if isinstance(value, (int, float)):
+        return [float(value)]
+    if isinstance(value, dict):
+        return [x for v in value.values() for x in _numbers(v)]
+    if isinstance(value, (list, tuple)):
+        return [x for v in value for x in _numbers(v)]
+    return []
 
 
 def test_a_reply_without_a_statement_gets_one_from_the_recipe(make_rt):
@@ -232,3 +258,49 @@ def test_the_schema_sent_to_the_model_is_the_schema_the_reply_is_judged_by(make_
     assert sent and judged
     assert sent[0] is judged[0]
     assert sent[0] == action_schema(("formalize",))
+
+
+def prompt_examples() -> list[tuple[str, str, dict[str, Any]]]:
+    """Every worked example in the router's prompt, as (label, recipe, slots)."""
+    from sciai.controller import recipes
+
+    out = []
+    for name, recipe in recipes.RECIPES.items():
+        for i, text in enumerate(recipe.examples, 1):
+            _, arrow, tail = text.partition("-> ")
+            assert arrow, f"{name} example {i} is not '\"question\" -> {{slots}}': {text}"
+            out.append((f"{name}#{i}", name, json.loads(tail)))
+    return out
+
+
+EXAMPLES = prompt_examples()
+# A question with no digit and no number word in it ("two" would have sourced the 2 in x**2),
+# so every number in an example slot is plainly not from here.
+UNRELATED = "Which of these molecules is more lipophilic, and why does it matter?"
+
+
+@pytest.mark.parametrize("label,route,slots", EXAMPLES, ids=[e[0] for e in EXAMPLES])
+def test_a_worked_example_value_never_reaches_an_answer(label, route, slots, make_rt):
+    """Yeri's item 6, in its general form: an example in the prompt is wording, never data.
+
+    The live run answered five chemistry questions with the photon-energy example's
+    3.9728917e-19 J and the circuit example's 0.06 A. Every example of every recipe is replayed
+    here against a question that contains none of its values: the plan must be refused, nothing
+    may be computed, and no value of the example may appear in what the user is told.
+    """
+    from sciai.controller import recipes
+    from sciai.controller.provenance import numbers_in
+
+    plan = recipes.RECIPES[route].plan(slots, UNRELATED)
+    assert plan.unsourced, f"{label}: the example's slots passed as the question's own values"
+
+    reply = json.dumps({"action": "formalize", "recipe": route, "slots": slots})
+    rt = make_rt(ScriptedLLM([reply, reply]))   # the first reply and the one re-ask
+    rt.engine.new_session(label)
+    res = rt.controller.run(UNRELATED)
+
+    assert res.status == "out_of_scope", f"{label}: {res.status}: {res.detail or res.answer}"
+    assert not nodes_of_type(rt, "tool_result"), f"{label}: a tool ran on an example value"
+    told = " ".join(str(x) for x in (res.answer, res.detail) if x)
+    for shown in numbers_in(slots):
+        assert shown not in told, f"{label}: the example's {shown} was given to the user"

@@ -53,6 +53,43 @@ def numbers_in(value: Any, skip_quantities: bool = False) -> set[str]:
     return out
 
 
+# Numbers a question writes in words. "x squared" contains the 2 in "x**2" as surely as "x^2"
+# does, and a slot filled from it is sourced: the test is the question's text, not its digits.
+WORD_NUMBERS: dict[str, str] = {
+    "zero": "0", "one": "1", "two": "2", "three": "3", "four": "4", "five": "5", "six": "6",
+    "seven": "7", "eight": "8", "nine": "9", "ten": "10", "eleven": "11", "twelve": "12",
+    "thirteen": "13", "fourteen": "14", "fifteen": "15", "sixteen": "16", "seventeen": "17",
+    "eighteen": "18", "nineteen": "19", "twenty": "20", "thirty": "30", "forty": "40",
+    "fifty": "50", "sixty": "60", "seventy": "70", "eighty": "80", "ninety": "90",
+    "hundred": "100", "thousand": "1000", "million": "1000000", "billion": "1000000000",
+    "dozen": "12",
+    # a power or a multiple is a number too, and this is how a question writes it
+    "squared": "2", "square": "2", "cubed": "3", "cube": "3", "twice": "2", "double": "2",
+    "doubled": "2", "half": "2", "halved": "2", "triple": "3", "tripled": "3",
+    "quadruple": "4", "quarter": "4", "quartered": "4",
+    "first": "1", "second": "2", "third": "3", "fourth": "4", "fifth": "5", "sixth": "6",
+    "seventh": "7", "eighth": "8", "ninth": "9", "tenth": "10",
+}
+_WORD = re.compile(r"[A-Za-z]+")
+
+
+def words_as_numbers(text: str) -> set[str]:
+    """The numbers a text writes in words, normalized like ``numbers_in``'s."""
+    out: set[str] = set()
+    for word in _WORD.findall(text or ""):
+        value = WORD_NUMBERS.get(word.lower())
+        if value is not None:
+            n = _norm(value)
+            if n:
+                out.add(n)
+    return out
+
+
+def numbers_asked(question: str) -> set[str]:
+    """Every number the question contains, in digits or in words."""
+    return numbers_in(question) | words_as_numbers(question)
+
+
 def _quantity_key(value: Any) -> tuple[str, str] | None:
     """(rounded SI value, dimensions) of a quantity object or a stored quantity result."""
     try:

@@ -20,6 +20,7 @@ from sciai.controller import lookup, recipes
 from sciai.controller.answer import render
 from sciai.controller.provenance import numbers_in, unsourced
 from sciai.domains.chem import decline as chem_decline
+from sciai.domains.chem import routing as chem_routing
 from sciai.domains.data.datasets import load_args
 from sciai.domains.data.report import diagnostic_text
 from sciai.domains.physics import quantities as Q
@@ -77,6 +78,45 @@ class Declined(Exception):
     def __init__(self, refusal: chem_decline.Decline) -> None:
         super().__init__(refusal.message)
         self.refusal = refusal
+
+
+class Unroutable(ActionError):
+    """The route cannot answer this question, and the reply that said so is the model's second.
+
+    Both subclasses are ``ActionError``, so the first one costs the one re-prompt the controller
+    already makes with the message as written -- which is where a model that chose the wrong
+    recipe or copied an example's numbers gets its chance to correct itself. A second failure
+    means no reply is going to work, and the question is answered out of scope rather than
+    computed from values it does not contain.
+    """
+
+    def __init__(self, message: str, detail: str) -> None:
+        super().__init__(message)
+        self.detail = detail
+
+
+class UnsourcedSlots(Unroutable):
+    """Slots the model filled with values the question does not contain."""
+
+    def __init__(self, recipe: str, slots: tuple[str, ...], shown: str) -> None:
+        names = ", ".join(slots)
+        super().__init__(
+            f"{names} is not in the question ({shown}). Copy only numbers and structures the "
+            f"question itself contains, never a value from an example; if {recipe} does not fit "
+            f'this question, reply with recipe "none" or the recipe that does',
+            f"the {recipe} recipe was filled with {names}, which the question does not contain")
+        self.recipe, self.slots = recipe, slots
+
+
+class WrongRoute(Unroutable):
+    """A molecule question routed to a recipe that is not about molecules."""
+
+    def __init__(self, route: str, offered: tuple[str, ...]) -> None:
+        super().__init__(
+            f"this question is about a molecule, so {route} cannot answer it. Use one of "
+            f'{", ".join(offered)}, or "molecule_question" with an "operation", or "none"',
+            f"a molecule question cannot be answered by {route}")
+        self.route = route
 
 
 @dataclass
@@ -241,12 +281,25 @@ class Controller:
             if route == recipes.NONE:
                 return
             if route in recipes.RECIPES:
+                # A molecule question may only become a chemistry recipe, the molecule path or
+                # out of scope. The question's own text decides that, in code: the live run
+                # had the router send "the molecular weight of caffeine" to photon_energy and
+                # the model fill it from that recipe's worked example.
+                if route not in recipes.CHEM_RECIPES and chem_routing.looks_chemical(question):
+                    raise WrongRoute(route, recipes.CHEM_RECIPES)
                 try:
-                    plan.append(recipes.RECIPES[route].plan(a.get("slots") or {}))
+                    built = recipes.RECIPES[route].plan(a.get("slots") or {}, question)
                 except recipes.SlotError as exc:
                     # A slot holding the wrong kind of thing is the one failure worth a retry:
                     # the model wrote something, and the message says what the slot takes.
                     raise ActionError(str(exc)) from None
+                if built.unsourced:
+                    # Nothing is computed from a value the question does not contain, not even
+                    # one that matches an example. This is raised before any tool runs.
+                    raise UnsourcedSlots(route, built.unsourced,
+                                         ", ".join(f"{s} = {built.values[s]}"
+                                                   for s in built.unsourced))
+                plan.append(built)
                 return
             goal = a.get("goal")
             # Capability first, and before the goal is validated: a request nothing serves is
@@ -273,6 +326,10 @@ class Controller:
             # The question does not contain a value the recipe needs. No amount of re-prompting
             # produces a number the question never had, so the user is asked, not the model.
             return self._needs_slots(question, missing)
+        except Unroutable as exc:
+            # Two replies, neither of which this system can answer from. Saying so is the
+            # honest outcome; computing from the second reply's numbers is not.
+            return self._out_of_scope(question, exc.detail)
         except ActionError as exc:
             self._error_node("could not formalize the question", str(exc), [])
             return TaskResult("error", detail=f"formalization failed: {exc}")
@@ -433,6 +490,12 @@ class Controller:
         by the specialist role the ladder chose, and the recipe itself is never re-planned by
         the model. A step that cannot be built or run at all is reported as it happened.
         """
+        if plan.unsourced:
+            # Unreachable through _formalize, which refuses such a plan before this is called.
+            # Here as the last gate in front of the tools, because this is the invariant that
+            # matters: no tool is ever run on a value the question did not contain.
+            return self._recipe_failed(
+                root, plan, f"{', '.join(plan.unsourced)} is not in the question")
         handles: list[str] = []
         results: list[dict[str, Any]] = []
         deps = [root.id]
@@ -462,7 +525,10 @@ class Controller:
                 return self._loop(root, "\n".join(out.lines), out.next_role)
             handles.append(self.engine.handle(node.id))
             results.append(node.result or {})
-            deps = [node.id]
+            # Every later step depends on every earlier one, which is both the honest lineage
+            # (the drug-likeness verdict really is built on the descriptors and the logP) and
+            # what makes those results count as sources for the next step's arguments.
+            deps = [*deps, node.id]
         if not handles:
             return self._recipe_failed(root, plan, "no step of the recipe produced a result")
         nodes = [self.engine.resolve(h) for h in handles]

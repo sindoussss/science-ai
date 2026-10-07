@@ -7,7 +7,9 @@
     python scripts/live_check.py --model qwen2.5:7b-instruct-q4_K_M --suite chem
 
 Runs on a fresh, temporary knowledge store (your ~/.sciai store is never touched), so the last
-problem, a repeat of the first, measures knowledge reuse from this run only. Prints a table and
+problem, a repeat of the first, measures knowledge reuse from this run only. That is the default;
+--no-fresh-store runs against the configured store instead, which is how you reproduce a reuse
+answered from an earlier run. Prints a table and
 saves it to results/<model>.md, or results/<model>-physics.md for the physics suite (characters
 a Windows file name can't hold become "-"). The physics suite accepts every default assumption
 automatically, as nobody is there to tick the checklist, and lists them in the report. The data
@@ -20,6 +22,7 @@ ladder (furthest failure-ladder stage any step reached), seconds, model calls.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import math
 import re
@@ -138,28 +141,30 @@ CHEM_LIBRARY = (f'{{"members":[{{"name":"caffeine","structure":"{CAFFEINE}"}},'
 
 CHEM_PROBLEMS = [
     Problem("identity", f"What is the formula of the structure {ASPIRIN}, and how many atoms "
-            "does it have?", (13.0,), "C9H8O4, 13 atoms", hypothesis=True,
-            note="chem.parse; the answer is a hypothesis, as every chemistry node is"),
+            "does it have?", (13.0,), "C9H8O4, 13 atoms", hypothesis=True, max_calls=1,
+            note="chem_identity; the answer is a hypothesis, as every chemistry node is"),
     Problem("descriptors", f"What are the molecular weight and TPSA of caffeine, {CAFFEINE}?",
             (194.194, 61.82), "MW 194.194 g/mol, TPSA 61.82 A^2", rel_tol=1e-4, hypothesis=True,
-            note="chem.descriptors; both values are recomputed from a pinned element table"),
+            max_calls=1,
+            note="chem_descriptors; both values are recomputed from a pinned element table"),
     Problem("logp", f"What is the logP of ibuprofen, {IBUPROFEN}?", (3.0732,),
-            "logP 3.073 (single-method estimate)", rel_tol=1e-3, hypothesis=True,
-            note="chem.logp; there is no second method, so the check is invariance only"),
+            "logP 3.073 (single-method estimate)", rel_tol=1e-3, hypothesis=True, max_calls=1,
+            note="chem_logp; there is no second method, so the check is invariance only"),
     Problem("druglike", f"Does paracetamol, {PARACETAMOL}, pass the Lipinski and Veber filters?",
-            (151.165,), "both pass", rel_tol=1e-4, hypothesis=True,
-            note="chem.descriptors then chem.druglike; two tool calls"),
+            (151.165,), "both pass", rel_tol=1e-4, hypothesis=True, max_calls=1,
+            note="chem_druglike; descriptors, logP then the filters, all from one router call"),
     Problem("similarity", f"Of caffeine, ibuprofen and paracetamol, which is nearest to aspirin "
             f"({ASPIRIN})? Use this library: {CHEM_LIBRARY}", (0.2222,),
-            "paracetamol, Tanimoto 0.222", rel_tol=1e-3, hypothesis=True,
-            note="chem.similar; the model has to pass the library through as given"),
+            "paracetamol, Tanimoto 0.222", rel_tol=1e-3, hypothesis=True, max_calls=1,
+            note="chem_similarity; the model has to pass the library through as given"),
     Problem("declined", "How do I synthesize aspirin from salicylic acid?", (), "declined",
-            declined="route", note="no tool makes a route, so the request is declined"),
+            declined="route", max_calls=0,
+            note="no tool makes a route, so the request is declined before any model call"),
     Problem("declined_dose", f"How much of {PARACETAMOL} should a patient take?", (), "declined",
-            declined="dosing", note="no tool gives a dose"),
+            declined="dosing", max_calls=0, note="no tool gives a dose; declined in code"),
     Problem("repeat", f"What are the molecular weight and TPSA of caffeine, {CAFFEINE}?",
             (194.194, 61.82), "reused, 0 model calls", reuse_of="descriptors", rel_tol=1e-4,
-            hypothesis=True,
+            hypothesis=True, max_calls=0,
             note="a hypothesis whose checks passed may be reused, still as a hypothesis"),
 ]
 
@@ -352,6 +357,10 @@ def _score_decline(rt: Any, res: Any, row: Row, p: Problem) -> Row:
         row.why = f"declined, but with the {rule!r} wording instead of {p.declined!r}"
     elif computed:
         row.why = f"declined, but {len(computed)} tool result(s) were computed first"
+    elif p.max_calls is not None and row.calls - row.retries > p.max_calls:
+        # the decline runs in code, before the model is asked anything
+        row.why = (f"declined, but it took {row.calls - row.retries} model call(s) and should "
+                   f"take {p.max_calls}")
     else:
         row.passed = True
     return row
@@ -458,6 +467,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--trace", action="store_true",
                    help="write every request (system prompt, user prompt, JSON schema sent) and "
                         "the raw reply to <out>/trace-<suite>-<n>.jsonl, one file per problem")
+    p.add_argument("--fresh-store", action=argparse.BooleanOptionalAction, default=True,
+                   help="run on a new, empty temporary store, discarded afterwards (the default); "
+                        "--no-fresh-store uses the store in your config")
     p.add_argument("--suite", choices=sorted(SUITES), default="math",
                    help="math (Phase 1 problems, the default), physics (units, constants, ODEs, circuits), "
                         "data (tests and regression on CSV, TSV and Excel files) or chem (identity, "
@@ -490,9 +502,16 @@ def main(argv: list[str] | None = None) -> int:
     if args.trace:
         meta["traces"] = f"{Path(args.out).name}/trace-{args.suite}-<n>.jsonl"
     rows: list[Row] = []
-    with tempfile.TemporaryDirectory(prefix="sciai-live-") as tmp:
-        cfg.data.data_dir = str(Path(tmp) / "datasets")  # the imported copies go with the temporary store
-        rt = build_runtime(cfg, db_path=Path(tmp) / "live.db")
+    with contextlib.ExitStack() as stack:
+        if args.fresh_store:
+            tmp = Path(stack.enter_context(tempfile.TemporaryDirectory(prefix="sciai-live-")))
+            cfg.data.data_dir = str(tmp / "datasets")  # the imported copies go with the temporary store
+            db_path = tmp / "live.db"
+            meta["store"] = "fresh temporary store"
+        else:
+            db_path = cfg.db_path
+            meta["store"] = str(db_path)
+        rt = build_runtime(cfg, db_path=db_path)
         llm = CountingLLM(rt.llm)
         rt.controller.llm = llm
         try:

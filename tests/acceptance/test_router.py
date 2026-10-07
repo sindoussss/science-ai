@@ -55,7 +55,7 @@ CASES = [
     ("unit_convert_temperature", "Convert 25 degC to kelvin.",
      route("unit_convert", "Convert 25 degC to K.", value="25", from_unit="degC", to_unit="K",
            kind="absolute_temperature"),
-     "That is 298.1 K.", (298.15,)),
+     "That is 298.15 K.", (298.15,)),
     ("definite_integral", "Compute the definite integral of x^2*exp(-x) from x = 0 to x = 1.",
      route("definite_integral", "Integrate x**2*exp(-x) from 0 to 1.",
            integrand="x**2*exp(-x)", var="x", lower="0", upper="1"),
