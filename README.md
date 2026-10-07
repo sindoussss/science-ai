@@ -224,7 +224,9 @@ pytest
 
 ## How a question flows
 
-1. Knowledge-store lookup (no model call). A verified answer to the same question is reused.
+1. Knowledge-store lookup (no model call). A stored answer to the same question is reused: a
+   verified one, or -- since a chemistry answer is never verified -- a chemistry hypothesis
+   whose results all passed their checks, which comes back still a hypothesis and says so.
 2. A question asking for something no tool performs (a synthesis route, a dose) is declined
    here, in code, before any model call.
 3. One model call routes the question to a recipe and fills that recipe's slots. The recipe list

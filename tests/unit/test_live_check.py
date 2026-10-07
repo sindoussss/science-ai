@@ -218,6 +218,26 @@ def test_the_whole_chem_suite_answers_through_recipes_in_one_call_each(lc, make_
         assert (row.status, row.calls, row.retries) == ("answered", 1, 0), key
 
 
+def test_the_chem_repeat_is_answered_from_the_store_with_no_model_call(lc, make_rt):
+    """The last row of the chem suite, and the last one to pass live. A chemistry answer is
+    never verified, so the verified-only lookup re-routed and recomputed every repeat; the
+    stored hypothesis is reused now, still as a hypothesis."""
+    problems = {p.key: p for p in lc.CHEM_PROBLEMS}
+    # the mangled caffeine qwen3:8b actually sent on 2026-10-07, which the question overrides
+    reply = {"action": "formalize", "recipe": "chem_descriptors",
+             "slots": {"structure": "Cn1cnc2c1c(=O)n(C)n(=O)c2C"}}
+    llm = lc.CountingLLM(ScriptedLLM([reply]))               # one reply, for the first ask only
+    rt = make_rt(llm)
+
+    row = lc.run_problem(rt, llm, problems["descriptors"])
+    assert row.passed, row.why
+    again = lc.run_problem(rt, llm, problems["repeat"])
+    assert again.passed, again.why
+    assert (again.status, again.calls) == ("reused", 0)
+    # The suite's own scoring is what checks the reused answer is still flagged a hypothesis
+    # and did not come back verified; a pass here is that check passing.
+
+
 def test_a_physics_recipe_cannot_answer_a_molecule_question(lc, make_rt):
     """Yeri's items 1 and 2, as the live check scores them. The model is given exactly the reply
     the real run produced -- photon_energy with the worked example's 500 nm -- and the suite must

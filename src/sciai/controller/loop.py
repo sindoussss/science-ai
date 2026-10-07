@@ -219,7 +219,7 @@ class Controller:
         if refusal is not None:
             return self._decline(refusal)
 
-        hit = lookup.verified_answer_for_question(self.engine.repo, question)
+        hit = lookup.answer_for_question(self.engine.repo, question)
         if hit is not None and not self._stale_data(hit):
             return self._reuse_answer(hit)
 
@@ -257,8 +257,13 @@ class Controller:
         self.engine.link_existing(final.id)
         for dep in self.engine.dependencies(final.id):
             self.engine.link_existing(dep)
-        return TaskResult("reused", answer=final.content, final_node=final.id, verified=True,
-                          detail="answered from a verified result in the knowledge store",
+        # A chemistry answer is stored as a hypothesis and comes back as one. Saying "verified"
+        # of it here would be the one claim this phase exists to prevent, whatever its checks.
+        verified = final.status == Status.VERIFIED
+        detail = ("answered from a verified result in the knowledge store" if verified else
+                  "answered from a stored hypothesis whose checks passed; it is still a hypothesis")
+        return TaskResult("reused", answer=final.content, final_node=final.id, verified=verified,
+                          detail=detail,
                           assumptions=list((final.tool_inputs or {}).get("assumptions") or []))
 
     def _formalize(self, question: str) -> Node | TaskResult:

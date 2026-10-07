@@ -339,13 +339,25 @@ class Repository:
         return [node_from_row(r) for r in rows]
 
     def verified_finals_for_problem(self, problem_fingerprint: str) -> list[Node]:
+        return self.finals_for_problem(problem_fingerprint, [Status.VERIFIED])
+
+    def finals_for_problem(self, problem_fingerprint: str, statuses: list[Status]) -> list[Node]:
+        """Answers stored for this same question, newest first.
+
+        A chemistry answer is never verified, so reusing one needs this to look wider than
+        ``verified`` and the caller to apply chemistry's own test.
+        """
+        if not statuses:
+            return []
+        marks = ", ".join("?" * len(statuses))
         rows = self.db.query(
             f"""SELECT {', '.join('f.' + c.strip() for c in _NODE_COLS.split(','))}
                 FROM nodes p JOIN edges e ON e.dst=p.id AND e.kind='depends_on'
                 JOIN nodes f ON f.id=e.src
-                WHERE p.fingerprint=? AND p.type='problem' AND f.type='final' AND f.status='verified'
+                WHERE p.fingerprint=? AND p.type='problem' AND f.type='final'
+                  AND f.status IN ({marks})
                 ORDER BY f.updated_at DESC""",
-            (problem_fingerprint,),
+            (problem_fingerprint, *[s.value for s in statuses]),
         )
         return [node_from_row(r) for r in rows]
 

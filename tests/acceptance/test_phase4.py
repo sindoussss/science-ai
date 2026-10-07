@@ -233,10 +233,17 @@ def test_no_route_in_the_system_can_verify_a_chemistry_node(make_rt):
 
 # 6 ---------------------------------------------- a passing check allows reuse
 def test_a_checked_hypothesis_is_reused_and_stays_a_hypothesis(make_rt, tmp_path):
-    """Change 5: reuse is what passing checks buy, and the reused node is still a hypothesis."""
+    """Change 5: reuse is what passing checks buy, and the reused node is still a hypothesis.
+
+    The same question asked twice is answered from the store outright, with no model call: a
+    chemistry answer is never verified, so the verified-only lookup used to re-route and
+    recompute every repeat. What comes back is the stored answer exactly as it was stored,
+    which is to say still a hypothesis, and the result says so rather than claiming a verified
+    store hit.
+    """
     goal = {"tool": "chem.descriptors", "args": {"structure": ASPIRIN}}
     db = tmp_path / "kb.db"
-    rt = make_rt(ScriptedLLM([{**FORMAL, "goal": goal}, {**FORMAL, "goal": goal}]), db_path=db)
+    rt = make_rt(ScriptedLLM([{**FORMAL, "goal": goal}, finish("chem.descriptors")]), db_path=db)
     rt.engine.new_session("first")
     first = rt.controller.run(QUESTION)
     node = nodes(rt, "chem.descriptors")[0]
@@ -244,8 +251,32 @@ def test_a_checked_hypothesis_is_reused_and_stays_a_hypothesis(make_rt, tmp_path
 
     rt.engine.new_session("again")
     again = rt.controller.run(QUESTION)
-    assert again.status == "answered" and not again.verified
+    assert again.status == "reused" and not again.verified
+    assert again.llm_calls == 0                           # nothing was asked of the model
+    assert "hypothesis" in again.detail
     reused = nodes(rt, "chem.descriptors")
     assert len(reused) == 1 and reused[0].id == node.id   # the same node, linked into the session
     assert reused[0].status == Status.HYPOTHESIS
     assert first.answer == again.answer
+    assert "hypothesis" in rt.engine.resolve(again.final_node).flags
+
+
+def test_an_answer_resting_on_a_failed_check_is_not_reused(make_rt, tmp_path):
+    """What passing checks buy is reuse, so a check that fails has to withdraw it: the answer
+    is recomputed for the next asker rather than handed back from the store."""
+    from dataclasses import replace
+
+    from sciai.controller import lookup
+    from sciai.graph.model import new_id
+
+    goal = {"tool": "chem.descriptors", "args": {"structure": ASPIRIN}}
+    rt = make_rt(ScriptedLLM([{**FORMAL, "goal": goal}, finish("chem.descriptors")]),
+                 db_path=tmp_path / "kb.db")
+    rt.engine.new_session("first")
+    rt.controller.run(QUESTION)
+    assert lookup.answer_for_question(rt.repo, QUESTION) is not None
+
+    node = nodes(rt, "chem.descriptors")[0]
+    passed = rt.repo.evidence_for(node.id)[0]
+    rt.repo.add_evidence(replace(passed, id=new_id(), outcome="fail"))
+    assert lookup.answer_for_question(rt.repo, QUESTION) is None
