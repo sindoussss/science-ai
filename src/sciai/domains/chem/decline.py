@@ -51,11 +51,87 @@ WORDING: tuple[tuple[str, re.Pattern[str], str], ...] = (
                                r"excipient|tablet press|capsule fill)\b", re.I),
      "This system screens candidate structures and does not give compounding or formulation "
      "instructions; those belong to a licensed pharmacy or lab."),
-    ("dosing", re.compile(r"\b(dose|dosage|dosing|mg/kg|administer\w*|how much .{0,40}take|"
-                          r"posolog\w+)\b", re.I),
+    # "how much ... take" spans whatever the question put in between, which may be a whole
+    # SMILES string: 40 characters was not enough for one, and the dose question then printed
+    # the generic sentence instead of the one about dosing.
+    ("dosing", re.compile(r"\b(dose|dosage|dosing|mg/kg|administer\w*|"
+                          r"how much [^.?!]{0,160}?take|posolog\w+)\b", re.I),
      "This system predicts molecular properties and cannot give a dose; dosing is a decision "
      "for a clinician."),
 )
+
+
+# ---------------------------------------------------------------------------- asked in code
+# Deciding before any model call whether a request can be served at all. The rule does not
+# change: these patterns only name the operation a question *asks for*, and ``served`` still
+# decides. An operation named here that is absent from OPERATION_TOOLS is declined because
+# nothing performs it, and the day a tool is registered for one, the same code serves it.
+#
+# Two lists, in this order. SERVED_REQUESTS recognises a question asking for something a tool
+# does; one match and nothing is pre-declined, which is what keeps "the logP of the product of
+# this synthesis" a logP question. UNSERVED_REQUESTS recognises a question *requesting* an
+# operation nothing performs, and only in a requesting construction: "how do I synthesize X",
+# not the word "synthesis" in passing, and "what dose", not "dose-limiting toxicity".
+SERVED_REQUESTS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("identity", re.compile(r"\b(canonical smiles|inchi\w*|formula|standardi[sz]\w+|"
+                           r"what (?:molecule|compound|structure) is)\b", re.I)),
+    ("descriptors", re.compile(r"\b(molecular weight|molar mass|tpsa|polar surface|rotatable|"
+                              r"h-?bond|heavy atoms?|descriptors?|monoisotopic|"
+                              r"sp3 fraction|rings?)\b", re.I)),
+    ("logp", re.compile(r"\b(logp|clogp|lipophilic\w*)\b", re.I)),
+    ("druglike", re.compile(r"\b(drug-?like\w*|lipinski|veber|rule of five)\b", re.I)),
+    ("similarity", re.compile(r"\b(similar\w*|tanimoto|nearest|neighbou?rs?|compare)\b", re.I)),
+    ("substructure", re.compile(r"\b(substructure|smarts)\b", re.I)),
+    ("cluster", re.compile(r"\bcluster\w*\b", re.I)),
+    ("literature", re.compile(r"\b(literature|papers?|corpus|passages?)\b", re.I)),
+    ("ranking", re.compile(r"\b(rank\w*|shortlist|best candidates?)\b", re.I)),
+)
+
+UNSERVED_REQUESTS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("synthesis_route", re.compile(
+        r"how (?:do|would|can|should|to)\s*(?:i|we|you)?\s*"
+        r"(?:synthesi[sz]e|synthesise|make|prepare|produce)\b|"
+        r"\b(?:synthesi[sz]e|prepare|produce)\s+[^.?!]{0,40}?\bfrom\b|"
+        r"\b(?:synthetic|synthesis|reaction|retrosynthetic)\s+route\b|"
+        r"\bretrosynthe\w+\b|\bsteps?\s+to\s+(?:synthesi[sz]e|make|prepare)\b", re.I)),
+    ("procedure", re.compile(
+        r"\breaction conditions\b|\b(?:procedure|protocol)\s+(?:for|to)\b|"
+        r"how (?:do|would|should)\s*(?:i|we)?\s*(?:run|carry out|perform)\b", re.I)),
+    ("compounding", re.compile(
+        r"\bcompounding\s+(?:instructions|procedure)\b|"
+        r"how (?:do|would|should)\s*(?:i|we)?\s*(?:formulate|compound)\b", re.I)),
+    ("dosing", re.compile(
+        r"\bwhat(?:'s| is)?\s+(?:the\s+)?(?:dose|dosage)\b|"
+        r"\b(?:dose|dosage)\s+(?:of|for)\b|\bdosing regimen\b|\bmg/kg\b|"
+        r"\bhow much\b[^.?!]{0,60}?\b(?:should|do|would)\b[^.?!]{0,30}?"
+        r"\b(?:take|takes|be given|receive|administer|ingest)\b|"
+        r"\bhow (?:much|many)\s+(?:mg|milligrams?|grams?|tablets?|capsules?)\b", re.I)),
+)
+
+
+def requested_operation(question: str) -> str | None:
+    """The operation a question asks for, when it plainly asks for one nothing performs.
+
+    None means "do not pre-decline": either the question asks for something a tool does, or it
+    is not asking for one of these operations at all. Being unsure is always None, because a
+    false decline refuses work the system can do, and the model's own ``operation`` is checked
+    by the same capability rule one call later.
+    """
+    text = question or ""
+    if any(pattern.search(text) for _, pattern in SERVED_REQUESTS):
+        return None
+    return next((op for op, pattern in UNSERVED_REQUESTS if pattern.search(text)), None)
+
+
+def decline_for_question(question: str, *,
+                         tool_names: frozenset[str] | None = None) -> Decline | None:
+    """A ``Decline`` for a question that asks for an operation nothing serves, before any model
+    call is made. Capability still decides: the operation goes through ``decline_for``, so an
+    operation some tool performs is never declined here, whatever the wording."""
+    operation = requested_operation(question)
+    if operation is None:
+        return None
+    return decline_for(operation, question, tool_names=tool_names)
 
 
 @dataclass(frozen=True)
@@ -116,5 +192,6 @@ def _registered() -> frozenset[str]:
     return frozenset(t.name for t in all_tools())
 
 
-__all__ = ["Decline", "GENERIC", "OPERATION_TOOLS", "WORDING", "decline_for", "served",
+__all__ = ["Decline", "GENERIC", "OPERATION_TOOLS", "SERVED_REQUESTS", "UNSERVED_REQUESTS",
+           "WORDING", "decline_for", "decline_for_question", "requested_operation", "served",
            "served_operations", "wording_for"]

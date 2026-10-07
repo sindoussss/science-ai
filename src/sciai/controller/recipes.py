@@ -306,6 +306,35 @@ class Recipe:
             {k: v for k, v in (raw or {}).items() if v not in (None, "")})) & set(values)
         return Plan(self.name, self.steps, self.answer, values, frozenset(supplied))
 
+    def statement(self, values: Values) -> str:
+        """The problem as code reads it, for the root node the user confirms.
+
+        The model used to have to write this, and under a grammar that did not require it, it
+        simply did not: every live reply was then rejected for a missing ``statement``. Code can
+        write a more precise one anyway, because by this point the recipe and every slot value
+        are known, so nothing is left for the model to get wrong.
+        """
+        parts = []
+        for slot in self.slots:
+            # A "<x>_unit" slot is the unit of the slot "<x>" and is printed with it; a unit
+            # slot that names no other slot (from_unit, to_unit) stands on its own, and the
+            # requested target unit is part of the problem.
+            if slot.name not in values:
+                continue
+            if slot.name.endswith("_unit") and self.slot(slot.name[: -len("_unit")]) is not None:
+                continue
+            value = values[slot.name]
+            if isinstance(value, list):
+                text = ", ".join(num_text(v) for v in value)
+            elif isinstance(value, (int, float)) and not isinstance(value, bool):
+                text = num_text(value)
+            else:
+                text = str(value)
+            unit = values.get(f"{slot.name}_unit")
+            parts.append(f"{slot.name} = {text}" + (f" {unit}" if unit else ""))
+        head = self.about[0].upper() + self.about[1:]
+        return f"{head} ({', '.join(parts)})" if parts else head
+
     def sources(self, values: Values) -> dict[str, dict[str, Any]]:
         """The slot values as the problem's sources, which is what ``givens`` was for.
 

@@ -168,6 +168,7 @@ The UI tests open real (hidden) windows. On a machine without a display, set
 ```powershell
 python scripts\live_check.py --model qwen2.5:7b-instruct-q4_K_M
 python scripts\live_check.py --model qwen3:8b --think
+python scripts\live_check.py --model qwen3:8b --no-think --trace
 python scripts\live_check.py --model qwen2.5:7b-instruct-q4_K_M --suite physics
 python scripts\live_check.py --model qwen2.5:7b-instruct-q4_K_M --suite data
 python scripts\live_check.py --model qwen2.5:7b-instruct-q4_K_M --suite chem
@@ -190,6 +191,11 @@ R's sleep as an Excel sheet) and asks five questions about them (a Welch t-test,
 regression slope, a t-test on the Excel sheet, group means) plus a repeat of the first. Answers are
 checked against R's reference values to 4 significant digits. It saves `results\<model>-data.md`.
 
+`--trace` writes every exchange to `results\trace-<suite>-<n>.jsonl`, one file per problem and
+one JSON object per model call: the system prompt, the user prompt, the JSON schema the request
+sent as the output format, and the raw reply. Read it when a suite fails at formalization, since
+that is the only place the prompt, the schema and the reply sit side by side.
+
 `--suite chem` first standardizes five spellings of aspirin with no model call, and reports whether
 they collapse to one InChIKey (if they do not, nothing else the suite says about chemistry means
 anything). It then asks eight questions: identity, descriptors against reference values, a logP, a
@@ -211,22 +217,24 @@ pytest
 ## How a question flows
 
 1. Knowledge-store lookup (no model call). A verified answer to the same question is reused.
-2. One model call routes the question to a recipe and fills that recipe's slots. The recipe list
+2. A question asking for something no tool performs (a synthesis route, a dose) is declined
+   here, in code, before any model call.
+3. One model call routes the question to a recipe and fills that recipe's slots. The recipe list
    is a closed enum, so this is the whole of the model's planning; a question no recipe covers
    comes back as out of scope with the list of what there is. The root node holds the slots, and
    you confirm or edit it. The recipe also names the problem type, so the type's default
    assumptions (no air resistance, ideal wires...) are offered as a checklist; each ticked one
    becomes an assumption node, and rejecting it later invalidates everything built on it.
-3. Code then runs the recipe's tool calls, building each from the slots and the results before
+4. Code then runs the recipe's tool calls, building each from the slots and the results before
    it, so an easy question costs exactly that one model call. A call whose result is already
    verified in the store is reused instead of run.
-4. Hard-coded risk rules (stakes, surprise, confidence, step type, units) decide when a node needs
+5. Hard-coded risk rules (stakes, surprise, confidence, step type, units) decide when a node needs
    an independent check; a recipe's own tools are always checked, including that the answer is in
    the unit the question asked for. A failed check walks the ladder: retry with a different method
    or by the specialist role for that tool, backtrack, then escalate with both results side by side.
-5. A dataset or molecule question goes to the step-by-step controller loop instead: one JSON action
+6. A dataset or molecule question goes to the step-by-step controller loop instead: one JSON action
    per model call, validated, executed in the tool sandbox.
-6. The final answer is a template whose values are filled from node results, so the model never
+7. The final answer is a template whose values are filled from node results, so the model never
    writes a number. For a recipe the sentence is written by code, and it never names the unit,
    because the value renders with it.
 

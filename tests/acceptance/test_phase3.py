@@ -66,10 +66,10 @@ def assert_numbers_from_tools(rt, final_id):
 
 
 TTEST_GOAL = {"tool": "stats.ttest", "args": {"dataset": "trial.csv", "column": "score", "by": "group"}}
-FORMAL_GOAL = {"action": "formalize", "recipe": "dataset_question",
+FORMAL_GOAL = {"action": "formalize", "recipe": "dataset_question", "slots": {},
                "statement": "Compare mean score between groups A and B in trial.csv.",
                "problem_type": "data", "goal": TTEST_GOAL}
-FORMAL = {"action": "formalize", "recipe": "dataset_question",
+FORMAL = {"action": "formalize", "recipe": "dataset_question", "slots": {},
           "statement": "Describe and test the trial.csv data.", "problem_type": "data"}
 
 

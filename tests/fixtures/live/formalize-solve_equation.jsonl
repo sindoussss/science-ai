@@ -1,0 +1,1 @@
+{"problem": "solve_equation", "call": 1, "retry": false, "model": "qwen3:8b", "question": "Solve x^2 - 5*x + 6 = 0 for x.", "expected": [2.0, 3.0], "request": {"role": "formalizer"}, "reply": "{\"action\":\"formalize\",\"recipe\":\"solve_equation\",\"slots\":{\"equation\":\"x**2 - 5*x + 6 = 0\",\"var\":\"x\"}}"}

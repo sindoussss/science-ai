@@ -224,6 +224,20 @@ Display: values show to four significant figures, the unit is written exactly on
 
 Not changed: numbers still only come from tools, answers are still templates filled from node results, every tool result still gets an independent check, and a chemistry node is still always a hypothesis. A recipe's slots are the problem's sources, so a slot holding a number the question never had still flags every result built on it.
 
+### 3.7b One schema for the request and the reply (2026-10-07)
+
+The first live run of the recipe branch failed every problem of all three suites at the same step: `formalization failed: formalize needs field(s): statement`, twice per problem, 0/6, 0/6 and 0/8. The recipes were not the problem and neither was the model. The request sent `ACTION_SCHEMA` to Ollama as the output format with `"required": ["action"]`, so the grammar the model generated under permitted `{"action","recipe","slots"}` and the model stopped there, exactly as a constrained model does. The validator, a separate table in the same file, demanded `statement` as well. The 629 mock tests passed throughout, because a mock emits whatever the test wrote.
+
+Three changes, so neither half can drift from the other again:
+
+- `llm/actions.py` defines each field once (`PROPERTIES`), which action may carry it (`FIELDS`) and which must (`REQUIRED`). `action_schema(allowed)` builds from those: one allowed action is a plain object whose `required` list forces its fields, several are an `anyOf` of one such object per action. `_ask` builds it once, passes it to `chat` as the output format and passes the same object to `parse_action`, which validates against the variant inside it. The only requirement check made on a reply is the schema's own `required` list, so a reply the request permitted cannot be rejected.
+- `statement` is no longer required of the model. `Recipe.statement(values)` writes it from the recipe and its filled slots, which is more precise than a restatement, and the model's own wording is still preferred when it sends one. What the router must now produce is `recipe` and `slots`, the two things only it can decide.
+- The scripted model in `tests/fakes/fake_llm.py` validates every scripted reply against the schema the controller handed it. A mock may only say what a real model could say, so a drift like this one now fails the whole suite at once rather than passing it. `tests/fixtures/live/` holds recorded replies in the format `--trace` writes, one per route, and `tests/acceptance/test_live_contract.py` checks each against the schema, the validator, the planner and the controller, plus the *minimal* object the schema permits for every action -- which is the shape that failed live.
+
+`scripts/live_check.py --trace` writes every exchange to `results/trace-<suite>-<n>.jsonl`: the system prompt, the user prompt, the JSON schema sent as the output format, and the raw reply. A formalization failure needs all four in one place; this bug was invisible from the table alone.
+
+Declines moved too. A question plainly asking for an operation nothing performs (a synthesis route, a dose) is now declined in `_run` before any model call, by `chem_decline.decline_for_question`. The capability rule is unchanged: patterns only name the operation a question asks for, `served()` still decides, and a question asking for anything a tool does is never pre-declined -- so "the logP of the product of this synthesis" stays a logP question. It matters because while formalization was broken those two requests came back as errors; a refusal must not depend on the model replying at all.
+
 ### 3.8 Failure ladder (in `verify/ladder.py`)
 
 1. Check fails -> retry once with a different method or role (new version of the same lineage).

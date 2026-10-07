@@ -22,15 +22,18 @@ EXAMPLE = re.compile(r'->\s*(\{.*\})\s*$')
 
 # ------------------------------------------------------------- the router's contract
 def test_the_router_enum_is_the_whole_of_the_model_s_planning_freedom():
-    assert R.ROUTES == (*R.RECIPES, R.DATASET, R.MOLECULE, R.NONE)
-    assert ACTION_SCHEMA["properties"]["recipe"]["enum"] == list(R.ROUTES)
-    assert "recipe" in ACTION_SCHEMA["required"] or True  # required per-action, checked below
-    from sciai.llm.actions import _REQUIRED
+    from sciai.llm.actions import action_variant
 
-    assert set(_REQUIRED["formalize"]) == {"statement", "recipe"}
+    assert R.ROUTES == (*R.RECIPES, R.DATASET, R.MOLECULE, R.NONE)
+    formalize = action_variant("formalize")
+    assert formalize["properties"]["recipe"]["enum"] == list(R.ROUTES)
+    # The router asks the model for the two things only it can decide, and nothing else: which
+    # recipe, and the slot values read off the question. The statement is code's job now.
+    assert formalize["required"] == ["action", "recipe", "slots"]
     # Slots are flat and scalar: a nested object is exactly what the models got wrong.
-    slots = ACTION_SCHEMA["properties"]["slots"]
+    slots = formalize["properties"]["slots"]
     assert slots["additionalProperties"] == {"type": ["string", "number", "boolean"]}
+    assert ACTION_SCHEMA["anyOf"][0] == formalize
 
 
 def test_the_nine_recipes_yeri_asked_for_exist():

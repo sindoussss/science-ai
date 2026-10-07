@@ -170,6 +170,15 @@ class Controller:
 
     # ---------------------------------------------------------------- phases
     def _run(self, question: str) -> TaskResult:
+        # Capability, in code, before anything else. A question asking for an operation no tool
+        # performs is declined here rather than routed, so a synthesis route or a dose comes
+        # back as the one sentence that says why not, never as a formalization error and never
+        # after a model call. ``decline_for_question`` still asks the registry, so this refuses
+        # exactly what the system cannot do.
+        refusal = chem_decline.decline_for_question(question)
+        if refusal is not None:
+            return self._decline(refusal)
+
         hit = lookup.verified_answer_for_question(self.engine.repo, question)
         if hit is not None and not self._stale_data(hit):
             return self._reuse_answer(hit)
@@ -268,9 +277,10 @@ class Controller:
             self._error_node("could not formalize the question", str(exc), [])
             return TaskResult("error", detail=f"formalization failed: {exc}")
 
-        if action["recipe"] == recipes.NONE:
-            return self._out_of_scope(question, action["statement"])
         self._pending_plan = plan[0] if plan else None
+        statement = self._statement(action, question, self._pending_plan)
+        if action["recipe"] == recipes.NONE:
+            return self._out_of_scope(question, statement)
         assumptions = action.get("assumptions") or {}
         goal = action.get("goal")
         if goal is not None and assumptions:
@@ -295,7 +305,7 @@ class Controller:
                                   if k in supplied and not numbers_in(v["value"]) <= in_question)
         root = Node(
             session_id="", layer=Layer.REASONING, type=NodeType.PROBLEM, title="Problem",
-            content=action["statement"], content_canonical=normalize_question(question),
+            content=statement, content_canonical=normalize_question(question),
             fingerprint=question_fingerprint(question),
             tool_inputs={"question": question, "assumptions": assumptions, "goal": goal,
                          "problem_type": problem_type, "givens": givens, "checklist": items,
@@ -320,6 +330,24 @@ class Controller:
                 self._pending_plan = None
         self._create_assumptions(root, items, rejected)
         return root
+
+    @staticmethod
+    def _statement(action: Action, question: str, plan: "recipes.Plan | None") -> str:
+        """The problem as the root node states it, for the user to confirm or edit.
+
+        The model may write one, and its own words are preferred when it does. It is not
+        required to, because a grammar that does not require a field will not produce it, and a
+        recipe plus its filled slots is a more precise statement than a restatement anyway. The
+        last resort is the question itself, which is never wrong.
+        """
+        written = str(action.get("statement") or "").strip()
+        if written:
+            return written
+        if plan is not None:
+            recipe = recipes.RECIPES.get(plan.recipe)
+            if recipe is not None:
+                return recipe.statement(plan.values)
+        return question.strip()
 
     @staticmethod
     def _normalize_givens(raw: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -518,16 +546,20 @@ class Controller:
              validate: Callable[[Action], None] | None = None) -> Action:
         """One call, and one retry if the output is invalid."""
         system = ROLES[role].system_prompt()
-        from sciai.llm.actions import ACTION_SCHEMA
+        from sciai.llm.actions import action_schema
 
+        # One schema, built once: it is both the output format Ollama generates under and the
+        # rules the reply is judged by, so the model is never rejected for a field the request
+        # did not require of it.
+        schema = action_schema(allowed)
         last_err: ActionError | None = None
         for attempt in range(2):
             prompt = user if attempt == 0 else (
                 f"{user}\n\nYOUR PREVIOUS REPLY WAS INVALID: {last_err}\nReply again with one valid JSON action.")
             self.llm_calls += 1
-            reply = self.llm.chat(system, prompt, ACTION_SCHEMA)
+            reply = self.llm.chat(system, prompt, schema)
             try:
-                action = parse_action(reply.text, allowed)
+                action = parse_action(reply.text, allowed, schema)
                 if validate is not None:
                     validate(action)
                 return action

@@ -20,6 +20,7 @@ ladder (furthest failure-ladder stage any step reached), seconds, model calls.
 from __future__ import annotations
 
 import argparse
+import json
 import math
 import re
 import sys
@@ -168,22 +169,52 @@ SUITE_FILES = {"data": DATA_FILES}
 
 
 class CountingLLM:
-    """Wraps the model to count calls and re-asks after invalid replies (no controller changes)."""
+    """Wraps the model to count calls and re-asks after invalid replies (no controller changes).
+
+    With ``--trace`` it also records every exchange: the system prompt, the user prompt, the
+    JSON schema the request sent as the output format, and the raw reply, one JSON object per
+    line. That is the file to read when a suite fails at formalization, because it is the only
+    place the three things that have to agree -- prompt, schema and reply -- are side by side.
+    """
 
     def __init__(self, inner: Any) -> None:
         self.inner = inner
         self.model_name = getattr(inner, "model_name", "?")
         self.calls = 0
         self.retries = 0
+        self.problem = ""
+        self.trace_path: Path | None = None
 
     def reset(self) -> None:
         self.calls = self.retries = 0
 
+    def trace_to(self, path: Path | None, problem: str = "") -> None:
+        """Record this problem's exchanges to ``path`` (one JSON object per call), or stop
+        recording when ``path`` is None."""
+        self.problem = problem
+        self.trace_path = path
+        if path is not None:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("", encoding="utf-8")  # one file per problem, never appended across runs
+
     def chat(self, system: str, user: str, schema: dict[str, Any]) -> Any:
         self.calls += 1
-        if any(m in user for m in RETRY_MARKERS):
+        retry = any(m in user for m in RETRY_MARKERS)
+        if retry:
             self.retries += 1
-        return self.inner.chat(system, user, schema)
+        reply = self.inner.chat(system, user, schema)
+        if self.trace_path is not None:
+            record = {
+                "problem": self.problem, "call": self.calls, "retry": retry,
+                "model": self.model_name,
+                "request": {"system": system, "user": user, "schema": schema},
+                "reply": getattr(reply, "text", ""),
+                "prompt_tokens": getattr(reply, "prompt_tokens", None),
+                "completion_tokens": getattr(reply, "completion_tokens", None),
+            }
+            with self.trace_path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+        return reply
 
 
 @dataclass
@@ -350,6 +381,15 @@ def report(rows: list[Row], meta: dict[str, str]) -> str:
               f"{sum(r.retries for r in rows)} JSON retries", "", format_table(rows), "", "## Problems", ""]
     lines += [f"{i}. **{r.problem.key}**: {r.problem.question}" + (f" ({r.problem.note})" if r.problem.note else "")
               for i, r in enumerate(rows, 1)]
+    if meta.get("traces"):
+        first = next((i for i, r in enumerate(rows, 1) if not r.passed), None)
+        lines += ["", "## Traces", "",
+                  f"Every request and reply is in {meta['traces']} (one file per problem, one "
+                  "JSON object per model call: the system prompt, the user prompt, the JSON "
+                  "schema the request sent as the output format, and the raw reply)."]
+        if first is not None:
+            lines += ["", f"The first failure is problem {first} "
+                          f"({rows[first - 1].problem.key}): read its trace first."]
     assumed = [(i, r) for i, r in enumerate(rows, 1) if r.assumptions]
     if assumed:
         lines += ["", "## Assumptions accepted automatically", ""]
@@ -415,6 +455,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--think", action=argparse.BooleanOptionalAction, default=None,
                    help="reasoning mode on/off (default: the config's [model] think)")
     p.add_argument("--out", default=str(ROOT / "results"), help="folder for <model>.md (default: results/)")
+    p.add_argument("--trace", action="store_true",
+                   help="write every request (system prompt, user prompt, JSON schema sent) and "
+                        "the raw reply to <out>/trace-<suite>-<n>.jsonl, one file per problem")
     p.add_argument("--suite", choices=sorted(SUITES), default="math",
                    help="math (Phase 1 problems, the default), physics (units, constants, ODEs, circuits), "
                         "data (tests and regression on CSV, TSV and Excel files) or chem (identity, "
@@ -444,6 +487,8 @@ def main(argv: list[str] | None = None) -> int:
     meta = {"model": cfg.model.name, "suite": args.suite, "think": str(cfg.model.think).lower(), "ollama": version,
             "num_ctx": str(cfg.model.num_ctx), "num_predict": str(cfg.model.num_predict),
             "date": datetime.now().strftime("%Y-%m-%d %H:%M")}
+    if args.trace:
+        meta["traces"] = f"{Path(args.out).name}/trace-{args.suite}-<n>.jsonl"
     rows: list[Row] = []
     with tempfile.TemporaryDirectory(prefix="sciai-live-") as tmp:
         cfg.data.data_dir = str(Path(tmp) / "datasets")  # the imported copies go with the temporary store
@@ -459,6 +504,8 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"identity fixture: {meta['identity fixture']}", flush=True)
             for i, p in enumerate(problems, 1):
                 print(f"[{i}/{len(problems)}] {p.key}: {p.question}", flush=True)
+                if args.trace:
+                    llm.trace_to(Path(args.out) / f"trace-{args.suite}-{i}.jsonl", p.key)
                 row = run_problem(rt, llm, p)
                 rows.append(row)
                 print(f"      {'PASS' if row.passed else 'FAIL'} ({row.status}, {row.seconds:.1f} s, "

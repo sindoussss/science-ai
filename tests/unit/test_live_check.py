@@ -3,11 +3,13 @@ from __future__ import annotations
 
 import importlib.util
 import inspect
+import json
 import sys
 from pathlib import Path
 
 import pytest
 
+from sciai.llm.actions import action_schema
 from tests.fakes.fake_llm import ScriptedLLM
 
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "live_check.py"
@@ -77,6 +79,39 @@ def test_too_many_planning_calls_fails_even_with_the_right_value(lc, make_rt, ru
     assert row.why == "right value, but it took 3 planning call(s) and should take 1"
 
 
+def test_trace_records_the_request_the_schema_and_the_raw_reply(lc, make_rt, tmp_path):
+    """Item 2 of the consolidated fix. The trace is the only place the prompt, the schema sent
+    as the output format and the reply sit side by side, which is what a formalization failure
+    needs: the bug it exists to expose was the schema and the validator disagreeing."""
+    llm = lc.CountingLLM(ScriptedLLM([INTEGRAL_ROUTE]))
+    path = tmp_path / "trace-math-1.jsonl"
+    llm.trace_to(path, "integral")
+    rt = make_rt(llm)
+    row = lc.run_problem(rt, llm, lc.PROBLEMS[0])
+    assert row.passed, row
+
+    lines = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    assert len(lines) == 1                      # one routing call, so one record
+    rec = lines[0]
+    assert rec["problem"] == "integral" and rec["call"] == 1 and rec["retry"] is False
+    assert "QUESTION:" in rec["request"]["user"]
+    assert "recipe" in rec["request"]["system"] or "RECIPES" in rec["request"]["system"]
+    sent = rec["request"]["schema"]
+    assert sent == action_schema(("formalize",))          # the schema the model generated under
+    assert sent["required"] == ["action", "recipe", "slots"]
+    assert json.loads(rec["reply"])["recipe"] == "definite_integral"
+
+    llm.trace_to(None)                          # tracing off again: nothing more is written
+    llm.inner.steps.append(INTEGRAL_ROUTE)
+    llm.chat("sys", "QUESTION:\nanything", sent)
+    assert len([ln for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()]) == 1
+
+
+def test_trace_is_off_unless_asked_for(lc):
+    assert lc.parse_args(["--model", "m"]).trace is False
+    assert lc.parse_args(["--model", "m", "--trace"]).trace is True
+
+
 def test_retry_markers_match_the_controller(lc):
     from sciai.controller import loop
 
@@ -138,6 +173,41 @@ def test_physics_suite(lc, make_rt):
     assert "## Assumptions accepted automatically" in text and "no air resistance" in text
 
 
+def test_chem_suite_declines_cost_no_model_call(lc, make_rt):
+    """The chem suite scored 0/8 live, both declines included, because formalization failed
+    before the capability check ran. They are decided in code now, so the scripted model is
+    given nothing at all: a single call would raise."""
+    assert [p.key for p in lc.CHEM_PROBLEMS] == ["identity", "descriptors", "logp", "druglike",
+                                                 "similarity", "declined", "declined_dose",
+                                                 "repeat"]
+    assert lc.SUITES["chem"] is lc.CHEM_PROBLEMS
+    assert lc.parse_args(["--model", "m", "--suite", "chem"]).suite == "chem"
+
+    for problem in [p for p in lc.CHEM_PROBLEMS if p.declined]:
+        llm = lc.CountingLLM(ScriptedLLM([]))
+        row = lc.run_problem(make_rt(llm), llm, problem)
+        assert row.passed, row
+        assert (row.status, row.calls, row.retries) == ("declined", 0, 0)
+
+
+def test_chem_identity_answers_in_one_call_and_stays_a_hypothesis(lc, make_rt):
+    from tests.fakes.fake_llm import last_handle
+
+    aspirin = "CC(=O)Oc1ccccc1C(=O)O"
+    route = {"action": "formalize", "recipe": "molecule_question", "slots": {},
+             "operation": "identity",
+             "goal": {"tool": "chem.parse", "args": {"structure": aspirin}}}
+
+    def finish(prompt):
+        h = last_handle(prompt, "chem.parse")
+        return {"action": "finish", "answer_template": f"It is {{{{{h}}}}}.", "answer_nodes": [h]}
+
+    llm = lc.CountingLLM(ScriptedLLM([route, finish]))
+    row = lc.run_problem(make_rt(llm), llm, lc.CHEM_PROBLEMS[0])
+    assert row.passed, row
+    assert row.status == "answered"
+
+
 def test_data_suite(lc, make_rt, cfg, tmp_path):
     assert [p.key for p in lc.DATA_PROBLEMS] == ["welch", "anova", "regression", "excel", "means", "repeat"]
     assert lc.parse_args(["--model", "m", "--suite", "data"]).suite == "data"
@@ -155,7 +225,7 @@ def test_data_suite(lc, make_rt, cfg, tmp_path):
         "trial.csv (40 x 7), plantgrowth.tsv (30 x 2), sleep.xlsx (20 x 3)"
 
     def goal(tool, **args):
-        return {"action": "formalize", "recipe": "dataset_question", "statement": "data question",
+        return {"action": "formalize", "recipe": "dataset_question", "slots": {}, "statement": "data question",
                 "problem_type": "data", "goal": {"tool": tool, "args": args}}
 
     row = ask(welch, goal("stats.ttest", dataset="trial.csv", column="score", by="group"))

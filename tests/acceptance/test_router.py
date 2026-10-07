@@ -121,7 +121,7 @@ def test_a_recipe_answers_in_one_model_call(make_rt, key, question, reply, answe
 
 
 def test_a_question_no_recipe_covers_is_out_of_scope(make_rt):
-    llm = ScriptedLLM([{"action": "formalize", "recipe": "none",
+    llm = ScriptedLLM([{"action": "formalize", "recipe": "none", "slots": {},
                         "statement": "The user asked for a limerick about thermodynamics."}])
     rt = make_rt(llm)
     rt.engine.new_session("scope")
