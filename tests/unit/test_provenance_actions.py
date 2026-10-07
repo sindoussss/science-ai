@@ -64,3 +64,68 @@ def test_si_value_of_a_given_sources_plain_si_numbers():
     args = {"equation": "Derivative(v(t), t) = -v(t)/(1000*1e-6)", "t_span": ["0", "0.002"]}
     assert unsourced(args, [givens], 10) == []
     assert unsourced({"t_span": ["0", "0.003"]}, [givens], 10) == ["0.003"]
+
+
+# ------------------------------------------------- structure slots (2026-10-07, chem run 6/8)
+CAFFEINE = "Cn1cnc2c1c(=O)n(C)c(=O)n2C"
+CAFFEINE_KEKULE = "CN1C=NC2=C1C(=O)N(C)C(=O)N2C"
+ASPIRIN = "CC(=O)Oc1ccccc1C(=O)O"
+CAFFEINE_QUESTION = f"What are the molecular weight and TPSA of caffeine, {CAFFEINE}?"
+
+
+def plan_of(recipe: str, question: str, **slots):
+    from sciai.controller.recipes import RECIPES
+
+    return RECIPES[recipe].plan(slots, question)
+
+
+def test_a_rewriting_of_the_questions_own_structure_is_sourced():
+    """Both failures of the 2026-10-07 chem run were this question. The router chose
+    chem_descriptors correctly; the model then wrote caffeine's Kekule form instead of copying
+    the aromatic SMILES the question gave. It is the same molecule, so it is the question's own
+    structure, and matching text refused a right answer."""
+    assert plan_of("chem_descriptors", CAFFEINE_QUESTION, structure=CAFFEINE).unsourced == ()
+    assert plan_of("chem_descriptors", CAFFEINE_QUESTION, structure=CAFFEINE_KEKULE).unsourced == ()
+
+
+@pytest.mark.parametrize("structure, why", [
+    ("C", "methane is a substring of almost any question carrying a SMILES"),
+    ("O", "so is water"),
+    ("caffeine", "a name is not a structure, whatever the question calls the molecule"),
+    (ASPIRIN, "a different molecule entirely"),
+])
+def test_a_structure_the_question_does_not_contain_is_refused(structure, why):
+    """The hole matching text left open: a one-atom SMILES passed provenance as the molecule
+    the question was about, because its text really was in the question."""
+    assert plan_of("chem_descriptors", CAFFEINE_QUESTION,
+                   structure=structure).unsourced == ("structure",), why
+
+
+def test_every_library_member_has_to_be_in_the_question():
+    library = ('{"members":[{"name":"caffeine","structure":"' + CAFFEINE + '"},'
+               '{"name":"aspirin","structure":"' + ASPIRIN + '"}]}')
+    question = f"Which of this library is nearest {CAFFEINE}? Use {library}"
+    assert plan_of("chem_similarity", question, structure=CAFFEINE, library=library).unsourced == ()
+
+    smuggled = library.replace(ASPIRIN, "c1ccccc1O")   # a member nobody asked about
+    assert plan_of("chem_similarity", question, structure=CAFFEINE,
+                   library=smuggled).unsourced == ("library",)
+
+
+def test_a_question_with_no_structure_in_it_sources_none():
+    assert plan_of("chem_logp", "What is the logP of caffeine?",
+                   structure=CAFFEINE).unsourced == ("structure",)
+
+
+def test_reading_structures_out_of_a_question_is_quiet_and_exact():
+    """The candidates are runs of SMILES-legal characters, so prose and a JSON library are both
+    split correctly -- and an English word is never handed to the toolkit, which would print a
+    parse error to the user's console for every word of every question."""
+    from sciai.domains.chem import standardize
+
+    assert standardize.keys_in_text(CAFFEINE_QUESTION) == \
+        frozenset({standardize.inchikey_of(CAFFEINE)})
+    # written in prose, in brackets, with the sentence's question mark against it
+    assert standardize.in_text(ASPIRIN, f"How many atoms has aspirin ({ASPIRIN})?")
+    assert standardize.inchikey_of("molecular") is None
+    assert standardize.inchikey_of("not a structure at all") is None

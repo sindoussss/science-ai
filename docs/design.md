@@ -252,6 +252,10 @@ Nothing in the design said a slot had to come from the question. The prompt now 
 
 Each of the five live failures is a permanent test. `tests/fixtures/live/` carries the recorded replies, including the three the model actually sent, and `test_a_worked_example_value_never_reaches_an_answer` replays *every* worked example of *every* recipe against a question that contains none of its values: the plan must be refused, no tool may run, and no value of the example may appear in what the user is told.
 
+**A structure is compared as a molecule, not as a string.** The next live run scored chemistry 6/8, and both failures were the same caffeine question: the router chose `chem_descriptors` correctly, and the model then wrote caffeine's Kekule form, `CN1C=NC2=C1C(=O)N(C)C(=O)N2C`, instead of copying the aromatic SMILES the question gave. The same molecule, so the question's own structure, refused by a text match. The same text match was also too generous in the other direction: `C` is a substring of almost any question carrying a SMILES, so methane passed provenance as the molecule asked about.
+
+The `structure` rule therefore asks whether the question contains a structure that *is* this molecule. `domains/chem/standardize.keys_in_text` scans the question for runs of SMILES-legal characters -- which splits prose and a JSON library alike -- reads each candidate with the same `read_twice` gate every structure goes through, and returns the InChIKeys found; `in_text` compares the slot's own key against that set. A run holding a letter the organic subset cannot write outside brackets is a word, not a structure, and never reaches the toolkit, so a question's prose costs nothing and prints nothing. A molecule the question does not contain still has nothing to match, and a name is not a structure, so a question naming only "caffeine" sources no SMILES the model remembers.
+
 ### 3.8 Failure ladder (in `verify/ladder.py`)
 
 1. Check fails -> retry once with a different method or role (new version of the same lineage).

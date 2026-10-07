@@ -273,20 +273,34 @@ COERCE: dict[str, Callable[[Slot, Any], Any]] = {
 # it matches one of the worked examples in the prompt, which is exactly how a molecule question
 # came back answered with the photon-energy example's 3.9728917e-19 J.
 #
-# "numbers": every number in the value must appear in the question.
-# "text": the value's text must appear in the question (whitespace ignored).
-# "none": nothing to trace. A unit, a variable name and a choice are not computed values, and a
-#         question says "in metres per second" rather than "m/s" anyway.
+# "numbers":   every number in the value must appear in the question.
+# "structure": the question must contain a structure that is this same molecule.
+# "none":      nothing to trace. A unit, a variable name and a choice are not computed values,
+#              and a question says "in metres per second" rather than "m/s" anyway.
+#
+# A structure is compared as a molecule, not as a string. Matching text both refused right
+# answers -- qwen3:8b rewrote the question's own "Cn1cnc2c1c(=O)n(C)c(=O)n2C" as the Kekule
+# form, which is the same molecule -- and accepted wrong ones, because "C" is a substring of
+# almost any question carrying a SMILES, so methane passed as the molecule asked about.
 PROVENANCE: dict[str, str] = {
     "number": "numbers", "bound": "numbers", "numbers": "numbers", "expr": "numbers",
     "equation": "numbers", "derivative": "numbers",
-    "smiles": "text", "library": "text",
+    "smiles": "structure", "library": "structure",
     "unit": "none", "var": "none", "choice": "none",
 }
 
 
-def _squeeze(text: str) -> str:
-    return re.sub(r"\s+", "", text)
+def _structures_of(value: Any) -> list[str]:
+    """The structures a slot's value holds: one, or one per library member."""
+    if isinstance(value, dict):
+        return [str(m["structure"]) for m in value.get("members", []) if m.get("structure")]
+    return [str(value)] if str(value).strip() else []
+
+
+def _in_question(structure: str, question: str) -> bool:
+    from sciai.domains.chem import standardize
+
+    return standardize.in_text(structure, question)
 
 
 # -------------------------------------------------------------------- recipes
@@ -391,7 +405,6 @@ class Recipe:
         from sciai.controller.provenance import numbers_asked, numbers_in
 
         asked = numbers_asked(question)
-        squeezed = _squeeze(question)
         bad: list[str] = []
         for slot in self.slots:
             if slot.name not in plan.values or slot.name not in plan.supplied:
@@ -400,10 +413,8 @@ class Recipe:
             value = plan.values[slot.name]
             if rule == "none":
                 continue
-            if rule == "text":
-                texts = ([m["structure"] for m in value.get("members", [])]
-                         if isinstance(value, dict) else [str(value)])
-                if any(_squeeze(x) and _squeeze(x) not in squeezed for x in texts):
+            if rule == "structure":
+                if any(not _in_question(x, question) for x in _structures_of(value)):
                     bad.append(slot.name)
                 continue
             if not numbers_in(value) <= asked:

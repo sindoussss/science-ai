@@ -254,8 +254,10 @@ calls each one makes. A number slot takes only the number; its unit lives in the
 
 Every value the model writes into a slot has to come from the question. A number slot is sourced
 only if each of its numbers appears in the question (digits or words, so "x squared" sources the 2
-in `x**2`), and a structure or library member has to appear verbatim; units and variable names
-carry no data and are exempt. A slot that fails gets one re-prompt naming it, and then the question
+in `x**2`). A structure is sourced if the question contains a structure that is the same molecule,
+compared by standard InChIKey, so a rewriting of the question's own SMILES is accepted and a
+molecule the question never mentioned is not -- including `C`, which matching text alone accepted
+because its text really was in the question. Units and variable names carry no data and are exempt. A slot that fails gets one re-prompt naming it, and then the question
 is answered out of scope -- nothing is computed from it, nothing is stored, and nothing stored that
 way is ever reused. This is why a question about a molecule cannot be answered by the photon-energy
 example's number. A question that mentions a molecule, a chemistry term or a SMILES structure is

@@ -18,8 +18,11 @@ when it was not the one typed in.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
-from typing import Any
+from contextlib import contextmanager
+from functools import lru_cache
+from typing import Any, Iterator
 
 MAX_ATOMS = 400          # a structure larger than this is a polymer or a protein, not a candidate
 
@@ -168,3 +171,102 @@ def screened(text: str, *, fmt: str = "smiles", threshold: float | None = None) 
 
 __all__ = ["MAX_ATOMS", "Identity", "MoleculeError", "identity", "parse", "read_twice",
            "screened", "standardize"]
+
+
+# ---------------------------------------------------------------- provenance
+# Yeri's rule (2026-10-07) is that a slot's value must be traceable to the question. For a
+# structure, "traceable" cannot be string equality: the second live run answered five of eight
+# chemistry questions wrongly because the router had picked a physics recipe, and the fix -- a
+# text match -- then refused a *right* answer, because qwen3:8b rewrote the question's own
+# "Cn1cnc2c1c(=O)n(C)c(=O)n2C" as the Kekule form "CN1C=NC2=C1C(=O)N(C)C(=O)N2C". String
+# equality is also too generous in the other direction: "C" is a substring of almost any
+# question that contains a SMILES, so methane passed as the molecule asked about.
+#
+# So a structure is sourced when the question itself contains a structure that standardizes to
+# the same InChIKey. The comparison is deterministic chemistry, never the model's word, and a
+# molecule the question does not contain still has nothing to match.
+SMILES_TEXT = re.compile(r"[A-Za-z0-9@+\-\[\]()=#$%/\\.*]+")
+# A SMILES never begins with any of these, and never ends with one either.
+_CANNOT_START = "()=#-+/\\.%0123456789"
+_CANNOT_END = "(=#-+/\\.%"
+
+
+# Outside square brackets a SMILES may only name the organic subset, so a run holding any
+# other letter is a word, not a structure, and is never handed to the toolkit.
+_BARE_ATOM_LETTERS = set("BCNOPSFIlrHbcnops")
+
+
+@contextmanager
+def _quiet() -> Iterator[None]:
+    """Silence the toolkit while a candidate is probed: a word that is not a structure is the
+    expected answer here, not a failure worth printing to the user's console."""
+    from rdkit import RDLogger
+
+    RDLogger.DisableLog("rdApp.*")
+    try:
+        yield
+    finally:
+        RDLogger.EnableLog("rdApp.*")
+
+
+def _could_be_smiles(text: str) -> bool:
+    if not text:
+        return False
+    if "[" in text:            # a bracket atom may name anything, so let the toolkit decide
+        return True
+    return all(not c.isalpha() or c in _BARE_ATOM_LETTERS for c in text)
+
+
+@lru_cache(maxsize=1024)
+def inchikey_of(text: str) -> str | None:
+    """The standard InChIKey of one structure, or None if it is not a readable structure.
+
+    Cached, because provenance asks the same question of the same text repeatedly (a re-prompt
+    re-plans the whole reply) and reading a structure twice is the expensive part.
+    """
+    if not _could_be_smiles(text):
+        return None
+    try:
+        with _quiet():
+            return read_twice(text).inchikey
+    except Exception:  # noqa: BLE001 - "not a structure" is the answer here, not a failure
+        return None
+
+
+def _variants(run: str) -> list[str]:
+    """One run of SMILES-legal characters, and the trims worth trying.
+
+    A question writes a structure in prose -- "aspirin (CC(=O)Oc1ccccc1C(=O)O)?" -- so the run
+    can carry the brackets around it. A SMILES may itself end in ")", so both are tried.
+    """
+    out = [run]
+    trimmed = run.lstrip(_CANNOT_START).rstrip(_CANNOT_END)
+    if trimmed and trimmed != run:
+        out.append(trimmed)
+    if trimmed.endswith(")"):
+        out.append(trimmed[:-1])
+    return [v for v in out if len(v) >= 1]
+
+
+@lru_cache(maxsize=256)
+def keys_in_text(text: str) -> frozenset[str]:
+    """The InChIKeys of every structure the text itself contains.
+
+    Runs of SMILES-legal characters are the candidates, so a JSON library in the question is
+    split on its quotes and braces and each member is found on its own. A run that is not a
+    structure simply contributes nothing.
+    """
+    keys = set()
+    for run in SMILES_TEXT.findall(text or ""):
+        for candidate in _variants(run):
+            key = inchikey_of(candidate)
+            if key:
+                keys.add(key)
+                break
+    return frozenset(keys)
+
+
+def in_text(structure: str, text: str) -> bool:
+    """Does ``text`` contain a structure that is this same molecule?"""
+    key = inchikey_of((structure or "").strip())
+    return bool(key) and key in keys_in_text(text or "")
