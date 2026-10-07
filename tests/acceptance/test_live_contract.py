@@ -291,16 +291,22 @@ def test_a_worked_example_value_never_reaches_an_answer(label, route, slots, mak
     from sciai.controller import recipes
     from sciai.controller.provenance import numbers_in
 
-    plan = recipes.RECIPES[route].plan(slots, UNRELATED)
-    assert plan.unsourced, f"{label}: the example's slots passed as the question's own values"
+    try:
+        plan = recipes.RECIPES[route].plan(slots, UNRELATED)
+        assert plan.unsourced, f"{label}: the example's slots passed as the question's own values"
+    except recipes.MissingSlots:
+        pass    # a structure recipe asks the user for one rather than ruling on the example
 
     reply = json.dumps({"action": "formalize", "recipe": route, "slots": slots})
     rt = make_rt(ScriptedLLM([reply, reply]))   # the first reply and the one re-ask
     rt.engine.new_session(label)
     res = rt.controller.run(UNRELATED)
 
-    assert res.status == "out_of_scope", f"{label}: {res.status}: {res.detail or res.answer}"
+    # Either answer is a refusal of the example: no recipe fits, or the question is put back to
+    # the user. What may never happen is a value of the example being used or shown.
+    assert res.status in ("out_of_scope", "needs_user"), \
+        f"{label}: {res.status}: {res.detail or res.answer}"
     assert not nodes_of_type(rt, "tool_result"), f"{label}: a tool ran on an example value"
-    told = " ".join(str(x) for x in (res.answer, res.detail) if x)
+    told = " ".join(str(x) for x in (res.answer, res.detail, res.question) if x)
     for shown in numbers_in(slots):
         assert shown not in told, f"{label}: the example's {shown} was given to the user"

@@ -51,7 +51,11 @@ _LABELLED = re.compile(r"^\s*(?:d\s*[A-Za-z]\w*\s*/\s*d\s*[A-Za-z]\w*|[A-Za-z]\w
 OFFSET_UNITS = {"degc", "celsius", "degree_celsius", "degf", "fahrenheit", "degree_fahrenheit"}
 
 MAX_RESISTORS = 8
-MAX_STRUCTURE = 1000
+MAX_STRUCTURE = 1000          # a SMILES or an InChI; prose is refused, not truncated
+# A molblock is a line per atom and a line per bond, so the 400-atom limit the toolkit
+# itself enforces is tens of thousands of characters. The cap is here to refuse an essay
+# in a structure slot, not to refuse a format the tools read.
+MAX_MOLBLOCK = 40_000
 MAX_LIBRARY_MEMBERS = 50
 # A structure is written in SMILES, InChI or a molblock. Letters, digits and the punctuation
 # those three use; no spaces, except that a molblock is multi-line.
@@ -71,22 +75,29 @@ class MissingSlots(Exception):
 
     def question(self) -> str:
         if len(self.slots) == 1:
-            return f"What is {self.slots[0].about}?"
+            return f"What is {self.slots[0].asked()}?"
         # Slots that are individually optional only got here as a group of which one is
         # needed, so the question asks for one of them rather than for all of them.
         joiner = " or " if all(not s.required for s in self.slots) else " and "
-        return "I need " + ", ".join(s.about for s in self.slots[:-1]) + \
-               joiner + self.slots[-1].about + ". What are they?"
+        return "I need " + ", ".join(s.asked() for s in self.slots[:-1]) + \
+               joiner + self.slots[-1].asked() + ". What are they?"
 
 
 @dataclass(frozen=True)
 class Slot:
     name: str
     kind: str            # number | unit | expr | equation | bound | var | choice | numbers
-    about: str           # one phrase, used in the prompt and in the question put to the user
+    about: str           # one phrase, for the prompt: it is addressed to the model
     required: bool = True
     default: Any = None
     choices: tuple[str, ...] = ()
+    # What to call this slot when the *user* is asked for it. ``about`` tells the model where
+    # to find the value ("copied from the question exactly as it is written"), which is not a
+    # sentence to put to a person.
+    ask: str = ""
+
+    def asked(self) -> str:
+        return self.ask or self.about
 
     def line(self) -> str:
         shown = self.name if self.required else f"{self.name}?"
@@ -241,7 +252,9 @@ def _smiles(slot: Slot, raw: Any) -> str:
     text = _trim_structure(str(raw))
     if not text:
         raise SlotError(f"{slot.name} is empty; it holds {slot.about}")
-    if len(text) > MAX_STRUCTURE:
+    from sciai.domains.chem.standardize import MOLBLOCK_END
+
+    if len(text) > (MAX_MOLBLOCK if MOLBLOCK_END in text else MAX_STRUCTURE):
         raise SlotError(f"{slot.name} is too long to be one structure ({slot.about})")
     if not STRUCTURE_TEXT.match(text):
         raise SlotError(f"{slot.name} must be the structure as the question writes it -- SMILES, "
@@ -433,14 +446,29 @@ class Recipe:
         if not slots:
             return plan
         found = standardize.structures_in_text(question)
+        if not found:
+            # A question that names a molecule and draws none ("the logP of caffeine?") leaves
+            # the model's memory as the only source of a structure, and that is not a source.
+            # The user is asked, as for any required value the question does not contain.
+            wanted = tuple(s for s in self.slots
+                           if s.required and s.kind in ("smiles", "library"))
+            raise MissingSlots(self.name, wanted or tuple(
+                s for s in self.slots if s.name in slots))
         if len(found) != 1:
             return plan
+        # The question may write its one structure as an InChI or a molblock. What the user
+        # confirms is the question's own wording, but a tool should be handed one format, so
+        # the slot takes the SMILES of what the question wrote and the format slot -- which the
+        # model may have set to match the question's wording -- is corrected to say so.
+        structure = standardize.as_smiles(found[0])
         values = dict(plan.values)
         taken = []
         for name in slots:
-            if values[name] != found[0]:
+            if values[name] != structure:
                 taken.append(name)
-            values[name] = found[0]
+            values[name] = structure
+        if "format" in values:
+            values["format"] = "smiles"
         # A value code read out of the question is a source, like a default, not a claim to trace.
         return replace(plan, values=values, supplied=plan.supplied - set(slots),
                        from_question=tuple(taken))
@@ -703,7 +731,8 @@ LIBRARY_EXAMPLE = json.dumps(
 CHEM_FORMAT = Slot("format", "choice", "how the structure is written", required=False,
                    choices=("smiles", "molblock", "inchi"))
 CHEM_STRUCTURE = Slot("structure", "smiles",
-                      "the structure, copied from the question exactly as it is written")
+                      "the structure, copied from the question exactly as it is written",
+                      ask="the structure of the molecule, as SMILES, InChI or a molblock")
 
 
 # ------------------------------------------------------------------ the library
@@ -942,7 +971,8 @@ _add(Recipe(
     slots=(CHEM_STRUCTURE,
            Slot("library", "library",
                 "the library JSON copied from the question, with a members list of name and "
-                "structure")),
+                "structure",
+                ask="the library to search, as JSON with a members list of name and structure")),
     steps=(_one("chem.similar", "the nearest members", _similar_args),),
     answer=_say("The nearest members are {h}."),
     examples=(_example(f"Which of this library is nearest {ASPIRIN_EXAMPLE}? "

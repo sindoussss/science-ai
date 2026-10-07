@@ -231,8 +231,9 @@ pytest
    here, in code, before any model call.
 3. One model call routes the question to a recipe and fills that recipe's slots. The recipe list
    is a closed enum, so this is the whole of the model's planning; a question no recipe covers
-   comes back as out of scope with the list of what there is. The root node holds the slots, and
-   you confirm or edit it. The recipe also names the problem type, so the type's default
+   comes back as out of scope with the list of what there is, and one that fits a recipe but
+   lacks a value the recipe needs is asked back to you rather than guessed at. The root node
+   holds the slots, and you confirm or edit it. The recipe also names the problem type, so the type's default
    assumptions (no air resistance, ideal wires...) are offered as a checklist; each ticked one
    becomes an assumption node, and rejecting it later invalidates everything built on it.
 4. Code then runs the recipe's tool calls, building each from the slots and the results before
@@ -263,11 +264,13 @@ Every value the model writes into a slot has to come from the question. A number
 only if each of its numbers appears in the question (digits or words, so "x squared" sources the 2
 in `x**2`). A structure is not copied by the model at all when the
 question carries exactly one: code reads it out of the question and fills the slot with it, and
-the root node says so. When the question carries several -- a similarity query and its library --
+the root node says so. The question may write that structure as a SMILES, an InChI or a
+molblock, all three of which the tools read; the slot ends up holding its SMILES either
+way. When the question carries several -- a similarity query and its library --
 the model still says which one is the subject, and that choice is sourced if the question contains
 a structure that is the same molecule, compared by standard InChIKey, so a rewriting of the
 question's own SMILES is accepted and a molecule the question never mentioned is not, including
-`C`. Units and variable names carry no data and are exempt. A slot that fails gets one re-prompt naming it, and then the question
+`C`. Units and variable names carry no data and are exempt. A question that names a molecule and draws no structure at all -- "the logP of caffeine?" -- is not refused: the system asks you for the structure, because the recipe is known and only the value is missing. A slot that fails gets one re-prompt naming it, and then the question
 is answered out of scope -- nothing is computed from it, nothing is stored, and nothing stored that
 way is ever reused. This is why a question about a molecule cannot be answered by the photon-energy
 example's number. A question that mentions a molecule, a chemistry term or a SMILES structure is

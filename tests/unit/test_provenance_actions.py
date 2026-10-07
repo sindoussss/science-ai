@@ -137,9 +137,18 @@ def test_every_library_member_has_to_be_in_the_question():
                    library=smuggled).unsourced == ("library",)
 
 
-def test_a_question_with_no_structure_in_it_sources_none():
-    assert plan_of("chem_logp", "What is the logP of caffeine?",
-                   structure=CAFFEINE).unsourced == ("structure",)
+def test_a_question_that_draws_no_structure_asks_the_user_for_one():
+    """A question naming a molecule and drawing none leaves the model's memory as the only
+    source of a structure, and that is not a source. The user is asked, as for any required
+    value the question does not contain -- and in words addressed to a person, not the phrase
+    the prompt uses to tell the model where to look."""
+    from sciai.controller.recipes import MissingSlots
+
+    with pytest.raises(MissingSlots) as caught:
+        plan_of("chem_logp", "What is the logP of caffeine?", structure=CAFFEINE)
+    assert caught.value.question() == \
+        "What is the structure of the molecule, as SMILES, InChI or a molblock?"
+    assert "copied from the question" not in caught.value.question()
 
 
 def test_reading_structures_out_of_a_question_is_quiet_and_exact():
@@ -170,6 +179,59 @@ def test_a_structure_copied_with_the_sentence_around_it_is_still_the_question(wr
     punctuation can begin or end a SMILES, and the charset guard has to stay wide enough for
     InChI (which does use "?" and ","), so it is trimmed from the slot instead."""
     assert plan_of("chem_descriptors", CAFFEINE_QUESTION, structure=written).unsourced == ()
+
+
+def test_a_question_written_as_an_inchi_or_a_molblock_is_read_too():
+    """The tools read all three formats -- the ``format`` slot names them -- so all three have
+    to be readable out of a question. Neither survives a scan for SMILES-legal runs: an InChI
+    is split on its commas, and a molblock's coordinate lines each end in a bare element
+    symbol, so "C" in the block would be read as methane. The slot ends up holding the SMILES
+    of what the question wrote, because a tool should be handed one format."""
+    from rdkit import Chem
+
+    from sciai.domains.chem import standardize
+
+    inchi = standardize.read_twice(CAFFEINE).inchi
+    plan = plan_of("chem_descriptors", f"What is the TPSA of {inchi}?", structure=inchi)
+    assert plan.unsourced == ()
+    assert standardize.inchikey_of(plan.values["structure"]) == standardize.inchikey_of(CAFFEINE)
+    assert plan.values["structure"] == standardize.as_smiles(inchi)
+
+    block = Chem.MolToMolBlock(Chem.MolFromSmiles(CAFFEINE))
+    question = "What is the TPSA of this molecule?\n" + block
+    # The model copying the block back is not what sources it; the question containing it is.
+    plan = plan_of("chem_descriptors", question, structure=block)
+    assert plan.unsourced == ()
+    assert standardize.inchikey_of(plan.values["structure"]) == standardize.inchikey_of(CAFFEINE)
+    assert standardize.structures_in_text(question) == (block,)
+    # Methane is in the block's coordinates, and is not what the question asks about.
+    assert not standardize.in_text("C", question)
+
+
+def test_a_molblock_keeps_its_blank_first_line():
+    """A molblock's first line is its title and is usually empty. Stripping leading whitespace
+    shifts every line up by one, so the counts line is read as coordinates and a perfectly good
+    block is refused: a pre-existing bug this provenance work surfaced."""
+    from rdkit import Chem
+
+    from sciai.domains.chem import standardize
+
+    block = Chem.MolToMolBlock(Chem.MolFromSmiles("CCO"))
+    assert block.startswith("\n")
+    assert standardize.read_twice(block, fmt="molblock").canonical_smiles == "CCO"
+
+
+def test_a_structure_the_code_read_also_corrects_the_format_slot():
+    """The model may set ``format`` to match the question's wording. Code then replaces the
+    structure with its SMILES, so the format has to say so or the tool parses a SMILES as an
+    InChI and the whole plan fails on a value nobody got wrong."""
+    from sciai.domains.chem import standardize
+
+    inchi = standardize.read_twice(CAFFEINE).inchi
+    plan = plan_of("chem_descriptors", f"What is the TPSA of {inchi}?",
+                   structure=inchi, format="inchi")
+    assert plan.values["format"] == "smiles"
+    assert plan.values["structure"] == standardize.as_smiles(inchi)
 
 
 def test_an_inchi_keeps_its_own_punctuation():

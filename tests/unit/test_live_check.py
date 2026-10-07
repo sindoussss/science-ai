@@ -292,13 +292,16 @@ def test_a_failing_row_says_why_and_quotes_the_model(lc, make_rt):
     assert "## What the model replied, for each failing problem" in text
     assert "photon_energy" in text
 
-    # A slot refusal names the slot and the value the model put in it.
-    nameless = lc.Problem("nameless", "What is the logP of caffeine?", (), "logP", max_calls=1)
-    bad = {"action": "formalize", "recipe": "chem_logp",
-           "slots": {"structure": "CN1C=NC2=C1C(=O)N(C)C(=O)N2C"}}
-    llm = lc.CountingLLM(ScriptedLLM([bad, bad]))
-    row = lc.run_problem(make_rt(llm), llm, nameless)
-    assert "structure = CN1C=NC2=C1C(=O)N(C)C(=O)N2C" in row.why, row.why
+    # A slot refusal names the slot and the value the model put in it. The question has to
+    # carry structures of its own, because one that draws none is asked about instead, and a
+    # similarity question is the shape where the model still chooses which structure to use.
+    problem = [p for p in lc.CHEM_PROBLEMS if p.key == "similarity"][0]
+    smuggled = {"action": "formalize", "recipe": "chem_similarity",
+                "slots": {"structure": "C", "library": lc.CHEM_LIBRARY}}
+    llm = lc.CountingLLM(ScriptedLLM([smuggled, smuggled]))
+    row = lc.run_problem(make_rt(llm), llm, problem)
+    assert not row.passed and row.status == "out_of_scope"
+    assert "structure = C" in row.why, row.why
 
 
 def test_data_suite(lc, make_rt, cfg, tmp_path):
