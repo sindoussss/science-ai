@@ -266,6 +266,23 @@ def keys_in_text(text: str) -> frozenset[str]:
     return frozenset(keys)
 
 
+@lru_cache(maxsize=256)
+def structures_in_text(text: str) -> tuple[str, ...]:
+    """The structures the text itself contains, as the text writes them, one per molecule.
+
+    The order is the order they appear, and a molecule written twice is listed once, so a
+    question carrying exactly one structure says so.
+    """
+    found: dict[str, str] = {}
+    for run in SMILES_TEXT.findall(text or ""):
+        for candidate in _variants(run):
+            key = inchikey_of(candidate)
+            if key:
+                found.setdefault(key, candidate)
+                break
+    return tuple(found.values())
+
+
 def in_text(structure: str, text: str) -> bool:
     """Does ``text`` contain a structure that is this same molecule?"""
     key = inchikey_of((structure or "").strip())

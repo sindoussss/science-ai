@@ -333,6 +333,8 @@ class Plan:
     supplied: frozenset[str] = frozenset()
     # Slots whose value the question does not contain. A plan with any of these is never run.
     unsourced: tuple[str, ...] = ()
+    # Slots code read out of the question itself, whatever the model wrote in them.
+    from_question: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -409,7 +411,39 @@ class Recipe:
         supplied = frozenset(self._split_units(
             {k: v for k, v in (raw or {}).items() if v not in (None, "")})) & set(values)
         plan = Plan(self.name, self.steps, self.answer, values, frozenset(supplied))
-        return plan if not question else replace(plan, unsourced=self.unsourced(plan, question))
+        if not question:
+            return plan
+        plan = self.read_structures(plan, question)
+        return replace(plan, unsourced=self.unsourced(plan, question))
+
+    def read_structures(self, plan: "Plan", question: str) -> "Plan":
+        """Fill a structure slot from the question rather than from the model's transcription.
+
+        A recipe's tool calls are built by code from the question's own values; a structure is
+        the one value that was still being copied by the model, 26 characters of punctuation at
+        a time, and qwen3:8b got caffeine wrong three runs in a row while answering every other
+        molecule correctly. When the question carries exactly one structure, that structure is
+        the question's answer to "which molecule", so code reads it and the model's copy is not
+        consulted. A question carrying several (a similarity query and its library) still needs
+        the model to say which one is the subject, and provenance still rules on that choice.
+        """
+        from sciai.domains.chem import standardize
+
+        slots = [s.name for s in self.slots if s.kind == "smiles" and s.name in plan.values]
+        if not slots:
+            return plan
+        found = standardize.structures_in_text(question)
+        if len(found) != 1:
+            return plan
+        values = dict(plan.values)
+        taken = []
+        for name in slots:
+            if values[name] != found[0]:
+                taken.append(name)
+            values[name] = found[0]
+        # A value code read out of the question is a source, like a default, not a claim to trace.
+        return replace(plan, values=values, supplied=plan.supplied - set(slots),
+                       from_question=tuple(taken))
 
     def unsourced(self, plan: "Plan", question: str) -> tuple[str, ...]:
         """The slots the model filled with something the question does not contain.

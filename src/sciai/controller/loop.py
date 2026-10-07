@@ -360,6 +360,9 @@ class Controller:
         in_question = numbers_in(question)
         unsourced_givens = sorted(k for k, v in givens.items()
                                   if k in supplied and not numbers_in(v["value"]) <= in_question)
+        if self._pending_plan is not None and self._pending_plan.from_question:
+            taken = ", ".join(self._pending_plan.from_question)
+            statement = f"{statement} ({taken} read from the question)"
         root = Node(
             session_id="", layer=Layer.REASONING, type=NodeType.PROBLEM, title="Problem",
             content=statement, content_canonical=normalize_question(question),
@@ -367,7 +370,11 @@ class Controller:
             tool_inputs={"question": question, "assumptions": assumptions, "goal": goal,
                          "problem_type": problem_type, "givens": givens, "checklist": items,
                          "unsourced_givens": unsourced_givens, "recipe": action["recipe"],
-                         "slots": dict(self._pending_plan.values) if self._pending_plan else {}},
+                         "slots": dict(self._pending_plan.values) if self._pending_plan else {},
+                         # Slots code read out of the question instead of taking the model's
+                         # copy, so the root the user confirms says where its values came from.
+                         "from_question": list(self._pending_plan.from_question)
+                         if self._pending_plan else []},
             role=role.name,
             flags=[f"unsourced_givens: {', '.join(unsourced_givens)}"] if unsourced_givens else [],
         )

@@ -88,17 +88,42 @@ def test_a_rewriting_of_the_questions_own_structure_is_sourced():
     assert plan_of("chem_descriptors", CAFFEINE_QUESTION, structure=CAFFEINE_KEKULE).unsourced == ()
 
 
+LIBRARY = ('{"members":[{"name":"caffeine","structure":"' + CAFFEINE + '"},'
+           '{"name":"aspirin","structure":"' + ASPIRIN + '"}]}')
+SEVERAL = f"Which of this library is nearest to paracetamol, CC(=O)Nc1ccc(O)cc1? Use {LIBRARY}"
+
+
 @pytest.mark.parametrize("structure, why", [
     ("C", "methane is a substring of almost any question carrying a SMILES"),
     ("O", "so is water"),
     ("caffeine", "a name is not a structure, whatever the question calls the molecule"),
-    (ASPIRIN, "a different molecule entirely"),
+    ("CN1C=NC2=C1C(=O)N(C)C(=O)N2", "a caffeine one atom short is a different molecule"),
 ])
 def test_a_structure_the_question_does_not_contain_is_refused(structure, why):
-    """The hole matching text left open: a one-atom SMILES passed provenance as the molecule
-    the question was about, because its text really was in the question."""
-    assert plan_of("chem_descriptors", CAFFEINE_QUESTION,
-                   structure=structure).unsourced == ("structure",), why
+    """Where the model still chooses: a question carrying several structures needs it to say
+    which one is the subject, so that choice is traced. The hole matching text left open was a
+    one-atom SMILES passing as the molecule asked about, because its text was in the question."""
+    assert plan_of("chem_similarity", SEVERAL, structure=structure,
+                   library=LIBRARY).unsourced == ("structure",), why
+
+
+@pytest.mark.parametrize("written, why", [
+    (CAFFEINE, "copied correctly"),
+    (CAFFEINE_KEKULE, "rewritten as the Kekule form, which qwen3:8b does from memory"),
+    ("CN1C=NC2=C1C(=O)N(C)C(=O)N2", "a copy one atom short"),
+    (ASPIRIN, "a different molecule entirely"),
+    ("C", "a single atom"),
+    ("caffeine", "the name instead of the structure"),
+])
+def test_a_lone_structure_is_read_out_of_the_question_not_copied_by_the_model(written, why):
+    """qwen3:8b answered four molecule questions correctly three runs in a row and got caffeine
+    wrong every time, because a structure was the one value still being transcribed by the model
+    -- 26 characters of punctuation. The question carries exactly one structure here, so that is
+    its answer to "which molecule", and code reads it."""
+    plan = plan_of("chem_descriptors", CAFFEINE_QUESTION, structure=written)
+    assert plan.unsourced == (), why
+    assert plan.values["structure"] == CAFFEINE, why
+    assert plan.from_question == (() if written == CAFFEINE else ("structure",)), why
 
 
 def test_every_library_member_has_to_be_in_the_question():

@@ -257,24 +257,28 @@ def test_a_failing_row_says_why_and_quotes_the_model(lc, make_rt):
     question gets. The cause -- the route, or the slot and the value the model put in it -- is
     in the graph, and the raw reply is what it has to be read against, so the table and the
     saved report now carry both and a failure no longer needs the trace file."""
-    reply = {"action": "formalize", "recipe": "chem_descriptors",
-             "slots": {"structure": "CC(=O)Oc1ccccc1C(=O)O"}}       # aspirin, not the caffeine asked about
-    llm = lc.CountingLLM(ScriptedLLM([reply, reply]))
     problem = [p for p in lc.CHEM_PROBLEMS if p.key == "descriptors"][0]
-    row = lc.run_problem(make_rt(llm), llm, problem)
-
-    assert not row.passed and row.status == "out_of_scope"
-    assert "chem_descriptors" in row.why and "structure = CC(=O)Oc1ccccc1C(=O)O" in row.why
-    assert row.replies and all("chem_descriptors" in r for r in row.replies)
-    text = lc.report([row], {"model": "m", "suite": "chem"})
-    assert "## What the model replied, for each failing problem" in text
-    assert "structure = CC(=O)Oc1ccccc1C(=O)O" in text
-
     wrong_route = {"action": "formalize", "recipe": "photon_energy",
                    "slots": {"wavelength": "500", "wavelength_unit": "nm", "to_unit": "J"}}
     llm = lc.CountingLLM(ScriptedLLM([wrong_route, wrong_route]))
     row = lc.run_problem(make_rt(llm), llm, problem)
+
+    assert not row.passed and row.status == "out_of_scope"
     assert "photon_energy" in row.why, row.why
+    assert row.replies and all("photon_energy" in r for r in row.replies)
+    # The console says it too, because a pasted console is usually all anyone reads.
+    assert any("photon_energy" in line for line in lc.explain(row))
+    text = lc.report([row], {"model": "m", "suite": "chem"})
+    assert "## What the model replied, for each failing problem" in text
+    assert "photon_energy" in text
+
+    # A slot refusal names the slot and the value the model put in it.
+    nameless = lc.Problem("nameless", "What is the logP of caffeine?", (), "logP", max_calls=1)
+    bad = {"action": "formalize", "recipe": "chem_logp",
+           "slots": {"structure": "CN1C=NC2=C1C(=O)N(C)C(=O)N2C"}}
+    llm = lc.CountingLLM(ScriptedLLM([bad, bad]))
+    row = lc.run_problem(make_rt(llm), llm, nameless)
+    assert "structure = CN1C=NC2=C1C(=O)N(C)C(=O)N2C" in row.why, row.why
 
 
 def test_data_suite(lc, make_rt, cfg, tmp_path):

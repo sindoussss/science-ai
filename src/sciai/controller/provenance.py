@@ -20,12 +20,24 @@ from sciai.domains.physics import quantities as Q
 _NUM = re.compile(r"(?<![A-Za-z_\d.])(\d+\.?\d*(?:[eE][+-]?\d+)?|\.\d+(?:[eE][+-]?\d+)?)")
 
 
+# No number a question or a result can hold is anywhere near this big or this small, while a
+# hex id like "53827e2321134" reads as a Decimal with an exponent of two million: normalizing
+# that raises Overflow, and writing it out plainly would be megabytes of digits. Caught here,
+# because the scan runs over node ids and file names as well as over numbers.
+MAX_EXPONENT = 1000
+
+
 def _norm(s: str) -> str | None:
     try:
         d = Decimal(s)
     except InvalidOperation:
         return None
-    return format(d.normalize(), "f")
+    if not d.is_finite() or (d != 0 and abs(d.adjusted()) > MAX_EXPONENT):
+        return None
+    try:
+        return format(d.normalize(), "f")
+    except (InvalidOperation, ArithmeticError, ValueError):
+        return None
 
 
 def numbers_in(value: Any, skip_quantities: bool = False) -> set[str]:

@@ -389,6 +389,15 @@ def _score_decline(rt: Any, res: Any, row: Row, p: Problem) -> Row:
     return row
 
 
+def explain(row: Row) -> list[str]:
+    """Why a problem failed, and the model's own replies, for the console."""
+    if row.passed:
+        return []
+    out = [f"why: {row.why}"] if row.why else []
+    out += [f"reply {i}: {_cell(reply, 400)}" for i, reply in enumerate(row.replies, 1)]
+    return out
+
+
 def _cell(text: str, limit: int = 60) -> str:
     text = " ".join(str(text).split()).replace("|", "\\|")
     return text if len(text) <= limit else text[: limit - 1] + "…"
@@ -562,6 +571,10 @@ def main(argv: list[str] | None = None) -> int:
                 rows.append(row)
                 print(f"      {'PASS' if row.passed else 'FAIL'} ({row.status}, {row.seconds:.1f} s, "
                       f"{row.calls} calls, {row.retries} retries, ladder {row.ladder})", flush=True)
+                # The table truncates its cells, and a console paste is usually all anyone
+                # reads, so a failure says in full here why it failed and what the model said.
+                for line in explain(row):
+                    print(f"      {line}", flush=True)
         except KeyboardInterrupt:
             print("interrupted: saving the problems that finished", file=sys.stderr)
         finally:
